@@ -11,6 +11,12 @@ async function getInternalUser(telegramId) {
   return res.rows[0];
 }
 
+// Пульс: целое число от 30 до 250, иначе пусто (защита от опечаток вроде «1500»)
+function hr(v) {
+  const n = parseInt(v, 10);
+  return n >= 30 && n <= 250 ? n : null;
+}
+
 // POST /api/workouts — создать/обновить запись за дату (тренировка или отдых).
 // Дата может быть любой прошедшей (календарь) или сегодняшней, но не будущей.
 router.post('/', requireTelegramAuth, async (req, res) => {
@@ -18,6 +24,9 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const { date, type, warmup, cooldown, feeling, rpe, notes, visibility, sets } = req.body;
+  const hrAvg = type === 'training' ? hr(req.body.hr_avg) : null;
+  const hrMax = type === 'training' ? hr(req.body.hr_max) : null;
+  const hrMin = type === 'training' ? hr(req.body.hr_min) : null;
 
   if (!isValidDate(date) || !['training', 'rest'].includes(type)) {
     return res.status(400).json({ error: 'date (ГГГГ-ММ-ДД) и type (training|rest) обязательны' });
@@ -33,14 +42,15 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     await client.query('BEGIN');
 
     const upserted = await client.query(
-      `INSERT INTO workouts (user_id, date, type, warmup, cooldown, feeling, rpe, notes, visibility)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO workouts (user_id, date, type, warmup, cooldown, feeling, rpe, notes, visibility, hr_avg, hr_max, hr_min)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT (user_id, date) DO UPDATE SET
          type = EXCLUDED.type, warmup = EXCLUDED.warmup, cooldown = EXCLUDED.cooldown,
          feeling = EXCLUDED.feeling, rpe = EXCLUDED.rpe, notes = EXCLUDED.notes,
-         visibility = EXCLUDED.visibility
+         visibility = EXCLUDED.visibility,
+         hr_avg = EXCLUDED.hr_avg, hr_max = EXCLUDED.hr_max, hr_min = EXCLUDED.hr_min
        RETURNING *`,
-      [user.id, date, type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, visibility || 'private']
+      [user.id, date, type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, visibility || 'private', hrAvg, hrMax, hrMin]
     );
     const workout = upserted.rows[0];
 
@@ -64,7 +74,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     // ИИ-фидбек от Fom — только для тренировок, не для дней отдыха
     let aiFeedback = null;
     if (type === 'training') {
-      // 7 предыдущих записей целиком (с разминкой, повторами, заминкой) — чтобы Fom видел реальный объём
+      // 7 предыдущих записей целиком (с разминкой, повторами, заминкой, пульсом) — чтобы Fom видел реальную картину
       const recentRes = await query(
         `SELECT w.*, COALESCE(json_agg(s.* ORDER BY s.order_index) FILTER (WHERE s.id IS NOT NULL), '[]') AS sets
          FROM workouts w LEFT JOIN workout_sets s ON s.workout_id = w.id
@@ -74,7 +84,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       );
       try {
         aiFeedback = await getWorkoutFeedback(
-          { date, type, warmup, cooldown, sets, rpe, feeling, notes, isBackdated: date !== today },
+          { date, type, warmup, cooldown, sets, rpe, feeling, notes, hr_avg: hrAvg, hr_max: hrMax, hr_min: hrMin, isBackdated: date !== today },
           recentRes.rows
         );
         await query('UPDATE workouts SET ai_feedback = $1 WHERE id = $2', [aiFeedback, workout.id]);
@@ -132,14 +142,18 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const { type, warmup, cooldown, feeling, rpe, notes, visibility, sets } = req.body;
+  const hrAvg = type === 'training' ? hr(req.body.hr_avg) : null;
+  const hrMax = type === 'training' ? hr(req.body.hr_max) : null;
+  const hrMin = type === 'training' ? hr(req.body.hr_min) : null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     const updated = await client.query(
-      `UPDATE workouts SET type=$1, warmup=$2, cooldown=$3, feeling=$4, rpe=$5, notes=$6, visibility=$7
-       WHERE id=$8 AND user_id=$9 RETURNING *`,
-      [type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, visibility || 'private', req.params.id, user.id]
+      `UPDATE workouts SET type=$1, warmup=$2, cooldown=$3, feeling=$4, rpe=$5, notes=$6, visibility=$7,
+         hr_avg=$8, hr_max=$9, hr_min=$10
+       WHERE id=$11 AND user_id=$12 RETURNING *`,
+      [type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, visibility || 'private', hrAvg, hrMax, hrMin, req.params.id, user.id]
     );
 
     if (updated.rows.length === 0) {
