@@ -18,3 +18,15 @@ export const pool = new Pool({
 export async function query(text, params) {
   return pool.query(text, params);
 }
+
+// Автоматическое обновление базы при запуске сервера — ничего не нужно делать руками в Supabase.
+// IF NOT EXISTS: если поле уже есть, команда просто ничего не сделает.
+pool
+  .query(
+    `ALTER TABLE workouts
+       ADD COLUMN IF NOT EXISTS hr_avg INT,
+       ADD COLUMN IF NOT EXISTS hr_max INT,
+       ADD COLUMN IF NOT EXISTS hr_min INT`
+  )
+  .then(() => console.log('DB schema OK (пульс)'))
+  .catch((err) => console.error('DB migration failed:', err.message));
