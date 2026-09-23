@@ -58,6 +58,46 @@ ${summary || 'записей нет'}
 }
 
 /**
+ * Чат с дневником: отвечает на вопросы спортсмена, опираясь на его реальные записи.
+ * history — предыдущие сообщения диалога (без текущего вопроса).
+ */
+export async function getChatReply(contextSummary, history, message) {
+  const systemPrompt = `Ты — тренер по лёгкой атлетике и заботливый ассистент спортсмена внутри приложения "Дневник спортсмена".
+Ты отвечаешь на вопросы, опираясь ТОЛЬКО на реальные данные его тренировок, которые даны ниже. Если чего-то в данных нет — честно скажи, что не можешь это посчитать, не выдумывай цифры.
+
+Данные тренировок за последние 30 дней:
+${contextSummary || 'записей нет'}
+
+Отвечай кратко и по делу, на русском, дружелюбным тоном тренера. Если вопрос не про тренировки/восстановление/здоровье — можешь мягко напомнить, что ты помогаешь именно с этим.`;
+
+  const messages = [...history, { role: 'user', content: message }];
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 500,
+      system: systemPrompt,
+      messages,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Claude API error: ${response.status} ${errText}`);
+  }
+
+  const data = await response.json();
+  const textBlock = data.content.find((b) => b.type === 'text');
+  return textBlock ? textBlock.text : null;
+}
+
+/**
  * Просит Claude выступить в роли тренера: оценить тренировку
  * в контексте последних дней и дать короткий фидбек + совет по восстановлению.
  */
