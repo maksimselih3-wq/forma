@@ -16,15 +16,27 @@ router.get('/', requireTelegramAuth, async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const period = req.query.period === 'month' ? 'month' : 'week';
-  const days = period === 'month' ? 30 : 7;
+
+  // Считаем от начала календарной недели (понедельник) или календарного месяца
+  const now = new Date();
+  let startDate;
+  if (period === 'month') {
+    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+  } else {
+    const day = now.getDay(); // 0=вс, 1=пн, ...
+    const diffToMonday = day === 0 ? 6 : day - 1;
+    startDate = new Date(now);
+    startDate.setDate(now.getDate() - diffToMonday);
+  }
+  const startDateStr = startDate.toISOString().slice(0, 10);
 
   try {
     const result = await query(
       `SELECT w.*, COALESCE(json_agg(s.*) FILTER (WHERE s.id IS NOT NULL), '[]') AS sets
        FROM workouts w LEFT JOIN workout_sets s ON s.workout_id = w.id
-       WHERE w.user_id = $1 AND w.date >= CURRENT_DATE - $2::int
+       WHERE w.user_id = $1 AND w.date >= $2::date
        GROUP BY w.id ORDER BY w.date ASC`,
-      [user.id, days]
+      [user.id, startDateStr]
     );
 
     if (result.rows.length === 0) {
