@@ -64,14 +64,17 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     // ИИ-фидбек от Fom — только для тренировок, не для дней отдыха
     let aiFeedback = null;
     if (type === 'training') {
+      // 7 предыдущих записей целиком (с разминкой, повторами, заминкой) — чтобы Fom видел реальный объём
       const recentRes = await query(
-        `SELECT date, type, rpe, feeling FROM workouts
-         WHERE user_id = $1 AND date < $2 ORDER BY date DESC LIMIT 7`,
+        `SELECT w.*, COALESCE(json_agg(s.* ORDER BY s.order_index) FILTER (WHERE s.id IS NOT NULL), '[]') AS sets
+         FROM workouts w LEFT JOIN workout_sets s ON s.workout_id = w.id
+         WHERE w.user_id = $1 AND w.date < $2
+         GROUP BY w.id ORDER BY w.date DESC LIMIT 7`,
         [user.id, date]
       );
       try {
         aiFeedback = await getWorkoutFeedback(
-          { date, warmup, sets, rpe, feeling, notes, isBackdated: date !== today },
+          { date, type, warmup, cooldown, sets, rpe, feeling, notes, isBackdated: date !== today },
           recentRes.rows
         );
         await query('UPDATE workouts SET ai_feedback = $1 WHERE id = $2', [aiFeedback, workout.id]);
