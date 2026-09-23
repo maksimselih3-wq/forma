@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
+import { recalcStreak, getClientToday } from '../streak.js';
 
 const router = Router();
 
@@ -10,17 +11,26 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
 
   const existing = await query('SELECT * FROM users WHERE telegram_id = $1', [tgUser.id]);
 
-  if (existing.rows.length > 0) {
-    return res.json({ user: existing.rows[0] });
+  let user = existing.rows[0];
+  if (!user) {
+    const inserted = await query(
+      `INSERT INTO users (telegram_id, username, first_name, photo_url)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [tgUser.id, tgUser.username || null, tgUser.first_name || null, tgUser.photo_url || null]
+    );
+    user = inserted.rows[0];
   }
 
-  const inserted = await query(
-    `INSERT INTO users (telegram_id, username, first_name, photo_url)
-     VALUES ($1, $2, $3, $4) RETURNING *`,
-    [tgUser.id, tgUser.username || null, tgUser.first_name || null, tgUser.photo_url || null]
-  );
+  // При каждом открытии пересчитываем серию: если человек пропустил день,
+  // он сразу увидит честную цифру, а не старую.
+  try {
+    const streak = await recalcStreak(user.id, getClientToday(req));
+    user = { ...user, current_streak: streak.current, longest_streak: streak.longest };
+  } catch (err) {
+    console.error('Streak recalc on login failed:', err.message);
+  }
 
-  res.json({ user: inserted.rows[0] });
+  res.json({ user });
 });
 
 export default router;
