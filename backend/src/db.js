@@ -3,7 +3,12 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const { Pool } = pg;
+const { Pool, types } = pg;
+
+// Тип DATE в Postgres (код 1082) отдаём как есть — строкой 'ГГГГ-ММ-ДД'.
+// Без этого pg превращает дату в объект Date с часовым поясом сервера,
+// и на фронт приходит что-то вроде '2026-09-21T00:00:00.000Z'.
+types.setTypeParser(1082, (val) => val);
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
