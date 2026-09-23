@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { query, pool } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
-import { recalcStreak } from '../streak.js';
+import { recalcStreak, getClientToday, isValidDate, daysBetween } from '../streak.js';
 import { getWorkoutFeedback } from '../ai.js';
 
 const router = Router();
@@ -11,15 +11,21 @@ async function getInternalUser(telegramId) {
   return res.rows[0];
 }
 
-// POST /api/workouts — создать/обновить запись за дату (тренировка или отдых)
+// POST /api/workouts — создать/обновить запись за дату (тренировка или отдых).
+// Дата может быть любой прошедшей (календарь) или сегодняшней, но не будущей.
 router.post('/', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const { date, type, warmup, cooldown, feeling, rpe, notes, visibility, sets } = req.body;
 
-  if (!date || !['training', 'rest'].includes(type)) {
-    return res.status(400).json({ error: 'date и type (training|rest) обязательны' });
+  if (!isValidDate(date) || !['training', 'rest'].includes(type)) {
+    return res.status(400).json({ error: 'date (ГГГГ-ММ-ДД) и type (training|rest) обязательны' });
+  }
+
+  const today = getClientToday(req);
+  if (daysBetween(today, date) > 0) {
+    return res.status(400).json({ error: 'Нельзя сделать запись на будущую дату' });
   }
 
   const client = await pool.connect();
@@ -52,9 +58,10 @@ router.post('/', requireTelegramAuth, async (req, res) => {
 
     await client.query('COMMIT');
 
-    await recalcStreak(user.id, date);
+    // Серию пересчитываем целиком — запись задним числом может «склеить» разорванную серию
+    const streak = await recalcStreak(user.id, today);
 
-    // ИИ-фидбек — только для тренировок, не для дней отдыха
+    // ИИ-фидбек от Fom — только для тренировок, не для дней отдыха
     let aiFeedback = null;
     if (type === 'training') {
       const recentRes = await query(
@@ -63,7 +70,10 @@ router.post('/', requireTelegramAuth, async (req, res) => {
         [user.id, date]
       );
       try {
-        aiFeedback = await getWorkoutFeedback({ date, warmup, sets, rpe, feeling, notes }, recentRes.rows);
+        aiFeedback = await getWorkoutFeedback(
+          { date, warmup, sets, rpe, feeling, notes, isBackdated: date !== today },
+          recentRes.rows
+        );
         await query('UPDATE workouts SET ai_feedback = $1 WHERE id = $2', [aiFeedback, workout.id]);
       } catch (err) {
         console.error('AI feedback failed:', err.message);
@@ -71,7 +81,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       }
     }
 
-    res.json({ workout: { ...workout, ai_feedback: aiFeedback }, sets: sets || [] });
+    res.json({ workout: { ...workout, ai_feedback: aiFeedback }, sets: sets || [], streak });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
@@ -87,7 +97,7 @@ router.get('/', requireTelegramAuth, async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const result = await query(
-    `SELECT w.*, COALESCE(json_agg(s.*) FILTER (WHERE s.id IS NOT NULL), '[]') AS sets
+    `SELECT w.*, COALESCE(json_agg(s.* ORDER BY s.order_index) FILTER (WHERE s.id IS NOT NULL), '[]') AS sets
      FROM workouts w LEFT JOIN workout_sets s ON s.workout_id = w.id
      WHERE w.user_id = $1 GROUP BY w.id ORDER BY w.date DESC`,
     [user.id]
@@ -157,14 +167,21 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// DELETE /api/workouts/:id
+// DELETE /api/workouts/:id — после удаления серия пересчитывается
 router.delete('/:id', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const result = await query('DELETE FROM workouts WHERE id = $1 AND user_id = $2 RETURNING id', [req.params.id, user.id]);
   if (result.rows.length === 0) return res.status(404).json({ error: 'Запись не найдена' });
-  res.json({ ok: true });
+
+  let streak = null;
+  try {
+    streak = await recalcStreak(user.id, getClientToday(req));
+  } catch (err) {
+    console.error('Streak recalc after delete failed:', err.message);
+  }
+  res.json({ ok: true, streak });
 });
 
 export default router;
