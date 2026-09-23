@@ -6,6 +6,7 @@ import authRoutes from './routes/auth.js';
 import workoutRoutes from './routes/workouts.js';
 import friendRoutes from './routes/friends.js';
 import insightRoutes from './routes/insights.js';
+import chatRoutes from './routes/chat.js';
 
 dotenv.config();
 
@@ -17,6 +18,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/workouts', workoutRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/insights', insightRoutes);
+app.use('/api/chat', chatRoutes);
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
