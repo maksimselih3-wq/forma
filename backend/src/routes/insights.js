@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import { query } from '../db.js';
+import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { getPeriodInsight } from '../ai.js';
+import { getClientToday } from '../streak.js';
 
 const router = Router();
 
@@ -17,26 +18,25 @@ router.get('/', requireTelegramAuth, async (req, res) => {
 
   const period = req.query.period === 'month' ? 'month' : 'week';
 
-  // Считаем от начала календарной недели (понедельник) или календарного месяца
-  const now = new Date();
+  // Считаем от начала календарной недели (понедельник) или календарного месяца —
+  // по «сегодня» пользователя, а не по часам сервера
+  const today = getClientToday(req);
+  const now = new Date(today + 'T00:00:00Z');
   let startDate;
   if (period === 'month') {
-    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   } else {
-    const day = now.getDay(); // 0=вс, 1=пн, ...
+    const day = now.getUTCDay(); // 0=вс, 1=пн, ...
     const diffToMonday = day === 0 ? 6 : day - 1;
     startDate = new Date(now);
-    startDate.setDate(now.getDate() - diffToMonday);
+    startDate.setUTCDate(now.getUTCDate() - diffToMonday);
   }
   const startDateStr = startDate.toISOString().slice(0, 10);
 
   try {
     const result = await query(
-      `SELECT w.*, COALESCE(json_agg(s.*) FILTER (WHERE s.id IS NOT NULL), '[]') AS sets
-       FROM workouts w LEFT JOIN workout_sets s ON s.workout_id = w.id
-       WHERE w.user_id = $1 AND w.date >= $2::date
-       GROUP BY w.id ORDER BY w.date ASC`,
-      [user.id, startDateStr]
+      `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date AND w.date <= $3::date ORDER BY w.date ASC`,
+      [user.id, startDateStr, today]
     );
 
     if (result.rows.length === 0) {
