@@ -73,6 +73,10 @@ const MIGRATIONS = [
    )`,
   `CREATE INDEX IF NOT EXISTS idx_comments_workout ON workout_comments(workout_id)`,
   `CREATE INDEX IF NOT EXISTS idx_friendships_friend ON friendships(friend_id)`,
+  // вид спорта и дисциплина — отметка в профиле
+  `ALTER TABLE users
+     ADD COLUMN IF NOT EXISTS sport TEXT,
+     ADD COLUMN IF NOT EXISTS discipline TEXT`,
   // Защита базы: включаем RLS на всех таблицах, которыми владеет сервер.
   // Сервер как владелец таблиц работает как раньше, а вот через публичный API Supabase
   // (если ключ когда-нибудь утечёт) прочитать или изменить данные будет нельзя.
