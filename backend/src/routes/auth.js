@@ -62,4 +62,22 @@ router.post('/avatar', requireTelegramAuth, async (req, res) => {
   res.json({ ok: true, avatar_data: result.rows[0].avatar_data });
 });
 
+// Какие виды спорта можно выбрать (названия и значки — на стороне приложения)
+const SPORTS = ['athletics', 'running', 'football', 'basketball', 'volleyball', 'hockey', 'swimming',
+  'cycling', 'triathlon', 'combat', 'tennis', 'fitness', 'other'];
+
+// POST /api/auth/sport { sport, discipline } — вид спорта и дисциплина в профиле ({ sport: null } — убрать)
+router.post('/sport', requireTelegramAuth, async (req, res) => {
+  const sport = req.body.sport === null ? null : String(req.body.sport || '');
+  if (sport !== null && !SPORTS.includes(sport)) return res.status(400).json({ error: 'Такого вида спорта нет' });
+  const discipline = sport ? (req.body.discipline || '').toString().trim().slice(0, 40) || null : null;
+
+  const result = await query(
+    'UPDATE users SET sport = $1, discipline = $2 WHERE telegram_id = $3 RETURNING sport, discipline',
+    [sport, discipline, req.telegramUser.id]
+  );
+  if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+  res.json({ ok: true, ...result.rows[0] });
+});
+
 export default router;
