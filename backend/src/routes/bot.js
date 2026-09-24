@@ -11,7 +11,11 @@ import crypto from 'crypto';
 const router = Router();
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const WEBHOOK_SECRET = process.env.BOT_WEBHOOK_SECRET;
+// Telegram принимает в секрете только латиницу, цифры, _ и -. Чтобы не зависеть от того,
+// что именно вписано в Railway (пробелы, переносы, другие символы), превращаем значение
+// в надёжный «отпечаток» из букв и цифр — его и отдаём Telegram, и с ним же сверяем.
+const RAW_SECRET = (process.env.BOT_WEBHOOK_SECRET || '').trim();
+const WEBHOOK_SECRET = RAW_SECRET ? crypto.createHash('sha256').update(RAW_SECRET).digest('hex') : '';
 const APP_URL = process.env.APP_URL || 'https://maksimselih3-wq.github.io/forma-2/';
 const SERVER_URL = process.env.SERVER_URL || 'https://forma-production-9c7a.up.railway.app';
 // Картинка приветствия лежит рядом с приложением на GitHub Pages
@@ -73,12 +77,13 @@ async function configureBot() {
 
   // Подписываемся на сообщения боту
   if (WEBHOOK_SECRET) {
-    await tg('setWebhook', {
+    const hook = await tg('setWebhook', {
       url: `${SERVER_URL}/api/bot/webhook`,
       secret_token: WEBHOOK_SECRET,
       allowed_updates: ['message'],
       drop_pending_updates: true,
     });
+    if (hook?.ok) console.log('Webhook OK — бот отвечает на /start');
   } else {
     console.log('BOT_WEBHOOK_SECRET не задан — бот не будет отвечать на /start');
   }
