@@ -420,7 +420,9 @@ router.get('/:friendId/profile', async (req, res) => {
   const [stats, days, workouts] = await Promise.all([
     query(
       `SELECT count(*) FILTER (WHERE type = 'training')::int AS total,
-              count(*) FILTER (WHERE type = 'training' AND date > CURRENT_DATE - 30)::int AS last30
+              count(*) FILTER (WHERE type = 'training' AND date > CURRENT_DATE - 30)::int AS last30,
+              (SELECT count(*)::int FROM friendships
+                WHERE status = 'accepted' AND (user_id = $1 OR friend_id = $1)) AS friends
        FROM workouts WHERE user_id = $1`,
       [friendId]
     ),
