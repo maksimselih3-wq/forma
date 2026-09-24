@@ -20,7 +20,7 @@ const APP_URL = process.env.APP_URL || 'https://maksimselih3-wq.github.io/forma-
 const REACTIONS = ['🔥', '👏', '💪', '🚀'];
 
 // Публичные поля человека, которые видят друзья (без фото целиком — фото грузится отдельно)
-const PUBLIC_USER = `u.id, u.username, u.first_name, u.current_streak, u.longest_streak, u.sport, u.discipline,
+const PUBLIC_USER = `u.id, u.username, u.first_name, u.last_name, u.current_streak, u.longest_streak, u.sport, u.discipline,
   CASE WHEN u.avatar_data IS NOT NULL THEN left(md5(u.avatar_data), 8)
        WHEN u.photo_url IS NOT NULL THEN 'tg' END AS avatar_v`;
 
@@ -38,7 +38,8 @@ async function loadMe(req, res, next) {
 }
 
 function displayName(u) {
-  return u.first_name || (u.username ? '@' + u.username : 'Спортсмен');
+  const full = [u.first_name, u.last_name].filter(Boolean).join(' ');
+  return full || (u.username ? '@' + u.username : 'Спортсмен');
 }
 
 function dayMonth(date) {
