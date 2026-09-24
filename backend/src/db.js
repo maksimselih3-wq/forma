@@ -50,7 +50,46 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_exercises_workout ON workout_exercises(workout_id)`,
   // своё фото профиля (картинка, сжатая на телефоне)
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data TEXT`,
+  // друзья: видят ли они мой календарь целиком и когда я последний раз смотрел активность
+  `ALTER TABLE users
+     ADD COLUMN IF NOT EXISTS share_calendar BOOLEAN DEFAULT true,
+     ADD COLUMN IF NOT EXISTS activity_seen_at TIMESTAMP DEFAULT now()`,
+  // реакции на тренировки (одна реакция от человека на запись)
+  `CREATE TABLE IF NOT EXISTS workout_reactions (
+     id SERIAL PRIMARY KEY,
+     workout_id INT REFERENCES workouts(id) ON DELETE CASCADE,
+     user_id INT REFERENCES users(id) ON DELETE CASCADE,
+     emoji TEXT NOT NULL,
+     created_at TIMESTAMP DEFAULT now(),
+     UNIQUE (workout_id, user_id)
+   )`,
+  // комментарии к тренировкам
+  `CREATE TABLE IF NOT EXISTS workout_comments (
+     id SERIAL PRIMARY KEY,
+     workout_id INT REFERENCES workouts(id) ON DELETE CASCADE,
+     user_id INT REFERENCES users(id) ON DELETE CASCADE,
+     text TEXT NOT NULL,
+     created_at TIMESTAMP DEFAULT now()
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_comments_workout ON workout_comments(workout_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_friendships_friend ON friendships(friend_id)`,
+  // Защита базы: включаем RLS на всех таблицах, которыми владеет сервер.
+  // Сервер как владелец таблиц работает как раньше, а вот через публичный API Supabase
+  // (если ключ когда-нибудь утечёт) прочитать или изменить данные будет нельзя.
+  `DO $$
+   DECLARE t text;
+   BEGIN
+     FOR t IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tableowner = current_user LOOP
+       EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
+     END LOOP;
+   END $$`,
 ];
+
+// Если где-то в маршруте случится непредвиденная ошибка (например, мусор вместо id),
+// сервер не должен падать целиком — пишем ошибку в лог и работаем дальше.
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled error:', err?.message || err);
+});
 
 export const dbReady = (async () => {
   for (const sql of MIGRATIONS) {
@@ -60,5 +99,5 @@ export const dbReady = (async () => {
       console.error('DB migration failed:', err.message);
     }
   }
-  console.log('DB schema OK (пульс, ОФП, фото)');
+  console.log('DB schema OK (пульс, ОФП, фото, друзья)');
 })();
