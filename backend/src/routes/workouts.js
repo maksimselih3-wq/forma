@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query, pool } from '../db.js';
+import { query, pool, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday, isValidDate, daysBetween } from '../streak.js';
 import { getWorkoutFeedback } from '../ai.js';
@@ -17,16 +17,63 @@ function hr(v) {
   return n >= 30 && n <= 250 ? n : null;
 }
 
+// Короткий текст: обрезаем пробелы и слишком длинные значения
+function txt(v, max = 60) {
+  const s = (v ?? '').toString().trim();
+  return s ? s.slice(0, max) : null;
+}
+
+// Упражнения силовой/ОФП: оставляем только строки, где указано название
+function cleanExercises(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((e) => ({
+      name: txt(e.name, 80),
+      sets: parseInt(e.sets, 10) > 0 ? Math.min(parseInt(e.sets, 10), 100) : null,
+      reps: txt(e.reps, 30),
+      weight: txt(e.weight, 30),
+    }))
+    .filter((e) => e.name);
+}
+
+// Сохранить беговые повторы и упражнения записи (старые удаляем, новые вставляем)
+async function saveChildren(client, workoutId, sets, exercises) {
+  await client.query('DELETE FROM workout_sets WHERE workout_id = $1', [workoutId]);
+  if (Array.isArray(sets)) {
+    for (let i = 0; i < sets.length; i++) {
+      const s = sets[i];
+      await client.query(
+        `INSERT INTO workout_sets (workout_id, order_index, distance_m, reps, time_or_pace, rest_between)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [workoutId, i, s.distance_m || null, s.reps || null, s.time_or_pace || null, s.rest_between || null]
+      );
+    }
+  }
+
+  await client.query('DELETE FROM workout_exercises WHERE workout_id = $1', [workoutId]);
+  for (let i = 0; i < exercises.length; i++) {
+    const e = exercises[i];
+    await client.query(
+      `INSERT INTO workout_exercises (workout_id, order_index, name, sets, reps, weight)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [workoutId, i, e.name, e.sets, e.reps, e.weight]
+    );
+  }
+}
+
 // POST /api/workouts — создать/обновить запись за дату (тренировка или отдых).
 // Дата может быть любой прошедшей (календарь) или сегодняшней, но не будущей.
 router.post('/', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const { date, type, warmup, cooldown, feeling, rpe, notes, visibility, sets } = req.body;
-  const hrAvg = type === 'training' ? hr(req.body.hr_avg) : null;
-  const hrMax = type === 'training' ? hr(req.body.hr_max) : null;
-  const hrMin = type === 'training' ? hr(req.body.hr_min) : null;
+  const { date, type, warmup, cooldown, feeling, rpe, notes, visibility } = req.body;
+  const isTraining = type === 'training';
+  const sets = isTraining && Array.isArray(req.body.sets) ? req.body.sets : [];
+  const exercises = isTraining ? cleanExercises(req.body.exercises) : [];
+  const hrAvg = isTraining ? hr(req.body.hr_avg) : null;
+  const hrMax = isTraining ? hr(req.body.hr_max) : null;
+  const hrMin = isTraining ? hr(req.body.hr_min) : null;
 
   if (!isValidDate(date) || !['training', 'rest'].includes(type)) {
     return res.status(400).json({ error: 'date (ГГГГ-ММ-ДД) и type (training|rest) обязательны' });
@@ -54,17 +101,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     );
     const workout = upserted.rows[0];
 
-    await client.query('DELETE FROM workout_sets WHERE workout_id = $1', [workout.id]);
-    if (Array.isArray(sets)) {
-      for (let i = 0; i < sets.length; i++) {
-        const s = sets[i];
-        await client.query(
-          `INSERT INTO workout_sets (workout_id, order_index, distance_m, reps, time_or_pace, rest_between)
-           VALUES ($1,$2,$3,$4,$5,$6)`,
-          [workout.id, i, s.distance_m || null, s.reps || null, s.time_or_pace || null, s.rest_between || null]
-        );
-      }
-    }
+    await saveChildren(client, workout.id, sets, exercises);
 
     await client.query('COMMIT');
 
@@ -73,18 +110,15 @@ router.post('/', requireTelegramAuth, async (req, res) => {
 
     // ИИ-фидбек от Fom — только для тренировок, не для дней отдыха
     let aiFeedback = null;
-    if (type === 'training') {
-      // 7 предыдущих записей целиком (с разминкой, повторами, заминкой, пульсом) — чтобы Fom видел реальную картину
+    if (isTraining) {
+      // 7 предыдущих записей целиком — чтобы Fom видел реальную картину
       const recentRes = await query(
-        `SELECT w.*, COALESCE(json_agg(s.* ORDER BY s.order_index) FILTER (WHERE s.id IS NOT NULL), '[]') AS sets
-         FROM workouts w LEFT JOIN workout_sets s ON s.workout_id = w.id
-         WHERE w.user_id = $1 AND w.date < $2
-         GROUP BY w.id ORDER BY w.date DESC LIMIT 7`,
+        `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date < $2 ORDER BY w.date DESC LIMIT 7`,
         [user.id, date]
       );
       try {
         aiFeedback = await getWorkoutFeedback(
-          { date, type, warmup, cooldown, sets, rpe, feeling, notes, hr_avg: hrAvg, hr_max: hrMax, hr_min: hrMin, isBackdated: date !== today },
+          { date, type, warmup, cooldown, sets, exercises, rpe, feeling, notes, hr_avg: hrAvg, hr_max: hrMax, hr_min: hrMin, isBackdated: date !== today },
           recentRes.rows
         );
         await query('UPDATE workouts SET ai_feedback = $1 WHERE id = $2', [aiFeedback, workout.id]);
@@ -94,7 +128,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       }
     }
 
-    res.json({ workout: { ...workout, ai_feedback: aiFeedback }, sets: sets || [], streak });
+    res.json({ workout: { ...workout, sets, exercises, ai_feedback: aiFeedback }, streak });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
@@ -109,28 +143,17 @@ router.get('/', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const result = await query(
-    `SELECT w.*, COALESCE(json_agg(s.* ORDER BY s.order_index) FILTER (WHERE s.id IS NOT NULL), '[]') AS sets
-     FROM workouts w LEFT JOIN workout_sets s ON s.workout_id = w.id
-     WHERE w.user_id = $1 GROUP BY w.id ORDER BY w.date DESC`,
-    [user.id]
-  );
+  const result = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 ORDER BY w.date DESC`, [user.id]);
 
   res.json({ workouts: result.rows, streak: { current: user.current_streak, longest: user.longest_streak } });
 });
 
-// GET /api/workouts/:id — одна запись с повторами
+// GET /api/workouts/:id — одна запись с повторами и упражнениями
 router.get('/:id', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const result = await query(
-    `SELECT w.*, COALESCE(json_agg(s.* ORDER BY s.order_index) FILTER (WHERE s.id IS NOT NULL), '[]') AS sets
-     FROM workouts w LEFT JOIN workout_sets s ON s.workout_id = w.id
-     WHERE w.id = $1 AND w.user_id = $2
-     GROUP BY w.id`,
-    [req.params.id, user.id]
-  );
+  const result = await query(`${WORKOUT_SELECT} WHERE w.id = $1 AND w.user_id = $2`, [req.params.id, user.id]);
 
   if (result.rows.length === 0) return res.status(404).json({ error: 'Запись не найдена' });
   res.json({ workout: result.rows[0] });
@@ -141,10 +164,14 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const { type, warmup, cooldown, feeling, rpe, notes, visibility, sets } = req.body;
-  const hrAvg = type === 'training' ? hr(req.body.hr_avg) : null;
-  const hrMax = type === 'training' ? hr(req.body.hr_max) : null;
-  const hrMin = type === 'training' ? hr(req.body.hr_min) : null;
+  const { type, warmup, cooldown, feeling, rpe, notes, visibility } = req.body;
+  const isTraining = type === 'training';
+  const sets = isTraining && Array.isArray(req.body.sets) ? req.body.sets : [];
+  const exercises = isTraining ? cleanExercises(req.body.exercises) : [];
+  const hrAvg = isTraining ? hr(req.body.hr_avg) : null;
+  const hrMax = isTraining ? hr(req.body.hr_max) : null;
+  const hrMin = isTraining ? hr(req.body.hr_min) : null;
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -161,20 +188,10 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
       return res.status(404).json({ error: 'Запись не найдена' });
     }
 
-    await client.query('DELETE FROM workout_sets WHERE workout_id = $1', [req.params.id]);
-    if (Array.isArray(sets)) {
-      for (let i = 0; i < sets.length; i++) {
-        const s = sets[i];
-        await client.query(
-          `INSERT INTO workout_sets (workout_id, order_index, distance_m, reps, time_or_pace, rest_between)
-           VALUES ($1,$2,$3,$4,$5,$6)`,
-          [req.params.id, i, s.distance_m || null, s.reps || null, s.time_or_pace || null, s.rest_between || null]
-        );
-      }
-    }
+    await saveChildren(client, req.params.id, sets, exercises);
 
     await client.query('COMMIT');
-    res.json({ workout: updated.rows[0], sets: sets || [] });
+    res.json({ workout: { ...updated.rows[0], sets, exercises } });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
