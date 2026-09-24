@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query } from '../db.js';
+import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { getChatReply, describeWorkout } from '../ai.js';
 import { getClientToday } from '../streak.js';
@@ -24,12 +24,9 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   const today = getClientToday(req);
 
   try {
-    // Берём записи целиком — с разминкой, повторами и заминкой, чтобы Fom видел реальный объём
+    // Берём записи целиком — с разминкой, повторами, силовой/ОФП и заминкой
     const result = await query(
-      `SELECT w.*, COALESCE(json_agg(s.* ORDER BY s.order_index) FILTER (WHERE s.id IS NOT NULL), '[]') AS sets
-       FROM workouts w LEFT JOIN workout_sets s ON s.workout_id = w.id
-       WHERE w.user_id = $1 AND w.date >= $2::date - 30
-       GROUP BY w.id ORDER BY w.date ASC`,
+      `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date - 30 ORDER BY w.date ASC`,
       [user.id, today]
     );
 
