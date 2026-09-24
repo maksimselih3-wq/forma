@@ -33,4 +33,25 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
   res.json({ user });
 });
 
+// POST /api/auth/avatar { image } — своё фото профиля.
+// Фото сжимается прямо на телефоне до маленькой картинки JPEG и хранится в базе.
+// { image: null } — удалить своё фото и вернуться к фото из Telegram.
+router.post('/avatar', requireTelegramAuth, async (req, res) => {
+  const image = req.body.image;
+
+  if (image !== null) {
+    const ok = typeof image === 'string' && /^data:image\/(jpeg|png|webp);base64,/.test(image);
+    if (!ok) return res.status(400).json({ error: 'Нужна картинка' });
+    if (image.length > 95000) return res.status(400).json({ error: 'Фото слишком большое' });
+  }
+
+  const result = await query(
+    'UPDATE users SET avatar_data = $1 WHERE telegram_id = $2 RETURNING avatar_data',
+    [image, req.telegramUser.id]
+  );
+  if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+  res.json({ ok: true, avatar_data: result.rows[0].avatar_data });
+});
+
 export default router;
