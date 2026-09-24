@@ -73,6 +73,8 @@ const MIGRATIONS = [
    )`,
   `CREATE INDEX IF NOT EXISTS idx_comments_workout ON workout_comments(workout_id)`,
   `CREATE INDEX IF NOT EXISTS idx_friendships_friend ON friendships(friend_id)`,
+  // фамилия из Telegram — чтобы друзья видели имя полностью
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT`,
   // вид спорта и дисциплина — отметка в профиле
   `ALTER TABLE users
      ADD COLUMN IF NOT EXISTS sport TEXT,
