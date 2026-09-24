@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { query, pool, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday, isValidDate, daysBetween } from '../streak.js';
-import { getWorkoutFeedback } from '../ai.js';
+import { getWorkoutFeedback, parseWorkoutText } from '../ai.js';
 
 const router = Router();
 
@@ -60,6 +60,47 @@ async function saveChildren(client, workoutId, sets, exercises) {
     );
   }
 }
+
+// Число в допустимых пределах, иначе пусто
+function num(v, min, max) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : null;
+}
+
+// POST /api/workouts/parse { text } — умный ввод: Fom раскладывает текст по полям формы
+router.post('/parse', requireTelegramAuth, async (req, res) => {
+  const text = (req.body.text || '').toString().trim().slice(0, 2000);
+  if (!text) return res.status(400).json({ error: 'Напиши, как прошла тренировка' });
+
+  try {
+    const p = await parseWorkoutText(text);
+    const parsed = {
+      type: p.type === 'rest' ? 'rest' : 'training',
+      warmup: txt(p.warmup, 500),
+      cooldown: txt(p.cooldown, 500),
+      notes: txt(p.notes, 1000),
+      rpe: num(p.rpe, 1, 10),
+      feeling: num(p.feeling, 1, 10),
+      hr_avg: hr(p.hr_avg),
+      hr_max: hr(p.hr_max),
+      hr_min: hr(p.hr_min),
+      sets: (Array.isArray(p.sets) ? p.sets : [])
+        .map((s) => ({
+          distance_m: num(s.distance_m, 1, 100000),
+          reps: num(s.reps, 1, 200),
+          time_or_pace: txt(s.time_or_pace, 30),
+          rest_between: txt(s.rest_between, 30),
+        }))
+        .filter((s) => s.distance_m || s.reps || s.time_or_pace)
+        .slice(0, 50),
+      exercises: cleanExercises(p.exercises).slice(0, 50),
+    };
+    res.json({ parsed });
+  } catch (err) {
+    console.error('Smart input failed:', err.message);
+    res.status(500).json({ error: 'Fom не смог разобрать текст. Попробуй написать чуть иначе.' });
+  }
+});
 
 // POST /api/workouts — создать/обновить запись за дату (тренировка или отдых).
 // Дата может быть любой прошедшей (календарь) или сегодняшней, но не будущей.
