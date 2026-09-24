@@ -20,7 +20,7 @@ const APP_URL = process.env.APP_URL || 'https://maksimselih3-wq.github.io/forma-
 const REACTIONS = ['🔥', '👏', '💪', '🚀'];
 
 // Публичные поля человека, которые видят друзья (без фото целиком — фото грузится отдельно)
-const PUBLIC_USER = `u.id, u.username, u.first_name, u.current_streak, u.longest_streak,
+const PUBLIC_USER = `u.id, u.username, u.first_name, u.current_streak, u.longest_streak, u.sport, u.discipline,
   CASE WHEN u.avatar_data IS NOT NULL THEN left(md5(u.avatar_data), 8)
        WHEN u.photo_url IS NOT NULL THEN 'tg' END AS avatar_v`;
 
