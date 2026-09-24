@@ -19,6 +19,14 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
       [tgUser.id, tgUser.username || null, tgUser.first_name || null, tgUser.photo_url || null]
     );
     user = inserted.rows[0];
+  } else {
+    // Имя, username и фото в Telegram могут поменяться — обновляем, чтобы друзья находили и видели актуальное
+    const updated = await query(
+      `UPDATE users SET username = $2, first_name = $3, photo_url = COALESCE($4, photo_url)
+       WHERE id = $1 RETURNING *`,
+      [user.id, tgUser.username || null, tgUser.first_name || null, tgUser.photo_url || null]
+    );
+    user = updated.rows[0] || user;
   }
 
   // При каждом открытии пересчитываем серию: если человек пропустил день,
@@ -40,7 +48,7 @@ router.post('/avatar', requireTelegramAuth, async (req, res) => {
   const image = req.body.image;
 
   if (image !== null) {
-    const ok = typeof image === 'string' && /^data:image\/(jpeg|png|webp);base64,/.test(image);
+    const ok = typeof image === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(image);
     if (!ok) return res.status(400).json({ error: 'Нужна картинка' });
     if (image.length > 95000) return res.status(400).json({ error: 'Фото слишком большое' });
   }
