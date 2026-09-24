@@ -14,17 +14,17 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
   let user = existing.rows[0];
   if (!user) {
     const inserted = await query(
-      `INSERT INTO users (telegram_id, username, first_name, photo_url)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [tgUser.id, tgUser.username || null, tgUser.first_name || null, tgUser.photo_url || null]
+      `INSERT INTO users (telegram_id, username, first_name, last_name, photo_url)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [tgUser.id, tgUser.username || null, tgUser.first_name || null, tgUser.last_name || null, tgUser.photo_url || null]
     );
     user = inserted.rows[0];
   } else {
     // Имя, username и фото в Telegram могут поменяться — обновляем, чтобы друзья находили и видели актуальное
     const updated = await query(
-      `UPDATE users SET username = $2, first_name = $3, photo_url = COALESCE($4, photo_url)
+      `UPDATE users SET username = $2, first_name = $3, last_name = $4, photo_url = COALESCE($5, photo_url)
        WHERE id = $1 RETURNING *`,
-      [user.id, tgUser.username || null, tgUser.first_name || null, tgUser.photo_url || null]
+      [user.id, tgUser.username || null, tgUser.first_name || null, tgUser.last_name || null, tgUser.photo_url || null]
     );
     user = updated.rows[0] || user;
   }
