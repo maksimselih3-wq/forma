@@ -1,5 +1,8 @@
 import { Router } from 'express';
 import crypto from 'crypto';
+import { query } from '../db.js';
+import { requireTelegramAuth } from '../telegramAuth.js';
+import { GIVEAWAYS, giveawayStatus, runDraw, startGiveawayScheduler, isAdmin, honestStreak, nextDrawAt } from '../giveaway.js';
 
 /**
  * Telegram-бот Forma:
@@ -66,6 +69,7 @@ async function configureBot() {
   await tg('setMyCommands', {
     commands: [
       { command: 'start', description: 'Открыть Forma' },
+      { command: 'giveaway', description: 'Розыгрыши подарков 🎁' },
       { command: 'help', description: 'Что умеет Forma' },
     ],
   });
@@ -90,6 +94,14 @@ async function configureBot() {
   console.log('Bot configured');
 }
 setTimeout(configureBot, 3000);
+
+// Розыгрыши: сервер сам подводит итоги по расписанию и пишет победителям
+const sendText = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, reply_markup: OPEN_BUTTON });
+startGiveawayScheduler(sendText);
+
+function mskDateLabel(d) {
+  return new Date(d).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+}
 
 // ---------- Ответы на сообщения ----------
 function welcomeText(name) {
@@ -136,6 +148,32 @@ async function handleMessage(msg) {
     return;
   }
 
+  if (text.startsWith('/giveaway')) {
+    const u = await query('SELECT id FROM users WHERE telegram_id = $1', [msg.from.id]);
+    const streak = u.rows[0] ? await honestStreak(u.rows[0].id) : 0;
+    const lines = Object.entries(GIVEAWAYS).map(([kind, g]) => {
+      const ok = streak >= g.minStreak;
+      return `${g.emoji} <b>${g.title}</b> — ${g.prize}\n` +
+        `Нужна честная серия от ${g.minStreak} дн. · итоги ${mskDateLabel(nextDrawAt(kind))} (МСК)\n` +
+        (ok ? '✅ Ты участвуешь!' : `Ещё ${g.minStreak - streak} дн. до участия`);
+    });
+    await tg('sendMessage', {
+      chat_id: chatId,
+      parse_mode: 'HTML',
+      reply_markup: OPEN_BUTTON,
+      text: `🎁 <b>Розыгрыши Forma</b>\n\nТвоя честная серия: <b>${streak} дн.</b> 🔥\n\n${lines.join('\n\n')}\n\n` +
+        '<i>Честная серия — дни подряд, где запись сделана в тот же день или не позже следующего. Чем длиннее серия, тем больше билетов.</i>',
+    });
+    return;
+  }
+
+  // Тестовый розыгрыш — только для админа: /draw_week или /draw_month
+  if (text === '/draw_week' || text === '/draw_month') {
+    if (!(await isAdmin(msg.from.id))) return;
+    await runDraw(text === '/draw_week' ? 'week' : 'month', sendText, { force: true });
+    return;
+  }
+
   if (text.startsWith('/help')) {
     await tg('sendMessage', { chat_id: chatId, text: HELP_TEXT, parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
     return;
@@ -148,6 +186,18 @@ async function handleMessage(msg) {
     reply_markup: OPEN_BUTTON,
   });
 }
+
+// GET /api/bot/giveaway — статус розыгрышей для приложения
+router.get('/giveaway', requireTelegramAuth, async (req, res) => {
+  try {
+    const u = await query('SELECT id FROM users WHERE telegram_id = $1', [req.telegramUser.id]);
+    if (!u.rows[0]) return res.status(404).json({ error: 'User not found' });
+    res.json(await giveawayStatus(u.rows[0].id));
+  } catch (err) {
+    console.error('Giveaway status failed:', err.message);
+    res.status(500).json({ error: 'Не удалось загрузить розыгрыши' });
+  }
+});
 
 // POST /api/bot/webhook — сюда Telegram присылает сообщения боту
 router.post('/webhook', (req, res) => {
