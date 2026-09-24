@@ -16,8 +16,15 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const message = (req.body.message || '').trim();
-  const history = Array.isArray(req.body.history) ? req.body.history : [];
+  // Ограничиваем длину: одно сообщение до 2000 символов, в памяти диалога — последние 20 сообщений.
+  // Так никто не сможет «накрутить» огромный запрос к ИИ за твой счёт.
+  const message = (req.body.message || '').toString().trim().slice(0, 2000);
+  const history = (Array.isArray(req.body.history) ? req.body.history : [])
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+    .slice(-20)
+    .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
+  // ИИ требует, чтобы диалог начинался с сообщения пользователя
+  while (history.length && history[0].role !== 'user') history.shift();
 
   if (!message) return res.status(400).json({ error: 'Пустое сообщение' });
 
