@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import crypto from 'crypto';
 import { query } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
@@ -216,6 +216,40 @@ router.get('/giveaway', requireTelegramAuth, async (req, res) => {
     console.error('Giveaway status failed:', err.message);
     res.status(500).json({ error: 'Не удалось загрузить розыгрыши' });
   }
+});
+
+// ---------- Картинки для сторис ----------
+// Telegram публикует сторис только по ссылке на картинку, поэтому приложение присылает готовую
+// картинку сюда, а мы отдаём её по короткой ссылке примерно час (в памяти сервера, без базы).
+const stories = new Map(); // id -> { buf, at }
+const STORY_TTL = 60 * 60 * 1000;
+const STORY_MAX = 300;
+
+function cleanStories() {
+  const now = Date.now();
+  for (const [id, s] of stories) if (now - s.at > STORY_TTL) stories.delete(id);
+  while (stories.size > STORY_MAX) stories.delete(stories.keys().next().value); // самые старые
+}
+
+// POST /api/bot/story — тело запроса: JPEG-картинка (image/jpeg), до 1.5 МБ
+router.post('/story', requireTelegramAuth, express.raw({ type: 'image/jpeg', limit: '1500kb' }), (req, res) => {
+  const buf = req.body;
+  const isJpeg = Buffer.isBuffer(buf) && buf.length > 1000 && buf[0] === 0xff && buf[1] === 0xd8;
+  if (!isJpeg) return res.status(400).json({ error: 'Нужна картинка JPEG' });
+  cleanStories();
+  const id = crypto.randomBytes(12).toString('hex');
+  stories.set(id, { buf, at: Date.now() });
+  res.json({ url: `${SERVER_URL}/api/bot/story/${id}.jpg` });
+});
+
+// GET /api/bot/story/:id.jpg — сама картинка (её забирает Telegram)
+router.get('/story/:file', (req, res) => {
+  const id = String(req.params.file || '').replace(/\.jpg$/, '');
+  const s = /^[a-f0-9]{24}$/.test(id) && stories.get(id);
+  if (!s || Date.now() - s.at > STORY_TTL) return res.status(404).json({ error: 'Картинка устарела' });
+  res.set('Content-Type', 'image/jpeg');
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.send(s.buf);
 });
 
 // POST /api/bot/webhook — сюда Telegram присылает сообщения боту
