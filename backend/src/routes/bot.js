@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { query } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { GIVEAWAYS, giveawayStatus, runDraw, startGiveawayScheduler, isAdmin, honestStreak, nextDrawAt } from '../giveaway.js';
-import { startReminderScheduler, reminderText } from '../reminders.js';
+import { startReminderScheduler, reminderText, sendWeeklyDigests } from '../reminders.js';
 
 /**
  * Telegram-бот Forma:
@@ -193,6 +193,14 @@ async function handleMessage(msg) {
     return;
   }
 
+  // Итоги недели прямо сейчас — только для админа, только себе
+  if (text === '/digest_test') {
+    if (!(await isAdmin(msg.from.id))) return;
+    const n = await sendWeeklyDigests(sendHtml, { force: true, onlyTelegramId: msg.from.id });
+    if (!n) await sendHtml(chatId, 'За эту неделю пока нет записей — итоги не из чего собрать.');
+    return;
+  }
+
   if (text.startsWith('/help')) {
     await tg('sendMessage', { chat_id: chatId, text: HELP_TEXT, parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
     return;
@@ -242,12 +250,23 @@ router.post('/story', requireTelegramAuth, express.raw({ type: 'image/jpeg', lim
   res.json({ url: `${SERVER_URL}/api/bot/story/${id}.jpg` });
 });
 
+// POST /api/bot/export — выгрузка дневника (CSV-файл), отдаём по короткой ссылке, чтобы Telegram скачал
+router.post('/export', requireTelegramAuth, express.raw({ type: 'text/csv', limit: '3mb' }), (req, res) => {
+  const buf = req.body;
+  if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'Пустой файл' });
+  cleanStories();
+  const id = crypto.randomBytes(12).toString('hex');
+  stories.set(id, { buf, at: Date.now(), type: 'text/csv; charset=utf-8' });
+  res.json({ url: `${SERVER_URL}/api/bot/story/${id}.csv` });
+});
+
 // GET /api/bot/story/:id.jpg — сама картинка (её забирает Telegram)
 router.get('/story/:file', (req, res) => {
-  const id = String(req.params.file || '').replace(/\.jpg$/, '');
+  const id = String(req.params.file || '').replace(/\.(jpg|csv)$/, '');
   const s = /^[a-f0-9]{24}$/.test(id) && stories.get(id);
   if (!s || Date.now() - s.at > STORY_TTL) return res.status(404).json({ error: 'Картинка устарела' });
-  res.set('Content-Type', 'image/jpeg');
+  res.set('Content-Type', s.type || 'image/jpeg');
+  if (s.type) res.set('Content-Disposition', 'attachment; filename="forma-diary.csv"');
   res.set('Cache-Control', 'public, max-age=3600');
   res.send(s.buf);
 });
