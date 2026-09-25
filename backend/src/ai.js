@@ -23,6 +23,9 @@ const VOLUME_RULE = `Объём (километры, минуты, отрезк�
 // Как читать пульс
 const PULSE_RULE = `Если указан пульс: «средний» и «максимальный» — за тренировку, «минимальный» — насколько низко пульс опускался в паузах отдыха между отрезками/подходами. Чем ниже пульс успевает опуститься в паузах, тем лучше восстановление. Сравнивай с прошлыми тренировками похожей работы: если в паузах пульс стал опускаться хуже (минимальный выше обычного) или максимальный выше при той же работе — это признак накопленной усталости. Если пульса нет — не упоминай его. Не ставь медицинских диагнозов.`;
 
+// Темп бега: только для средних и длинных дистанций
+const PACE_RULE = `Темп: для средних и длинных отрезков и непрерывного бега (от ~600 м, кроссы, темповые, длительные) оценивай работу в темпе мин/км. Например, 10 км за 50 мин — это 5:00/км. Где в записи стоит «темп ≈ …/км», он уже посчитан — бери его, не пересчитывай. Сравнивай темп с прошлыми похожими тренировками и с пульсом (быстрее при том же пульсе — хороший знак). Для спринта (короткие отрезки до ~400 м), прыжков, метаний и ОФП темп на километр не считай — там важны время отрезка и качество.`;
+
 // Как пользоваться данными о спортсмене (пол, возраст, рост, вес и т.д.)
 const ATHLETE_RULE = `Если ниже есть данные о спортсмене — учитывай их, чтобы оценки были точнее: возраст и пол (нормы пульса и восстановления), вес (нагрузка на суставы в прыжках и беге), стаж и уровень (какой объём для него привычен), дисциплину, личные рекорды и цель, травмы и ограничения (будь внимателен к нагрузке на эти места). Не комментируй внешность и вес тела, не советуй худеть или набирать вес и не давай диет, если спортсмен сам об этом не спросит. Если данных нет — просто не упоминай их.`;
 
@@ -85,12 +88,66 @@ function weekday(dateStr) {
   return WEEKDAYS[new Date(dateStr + 'T00:00:00Z').getUTCDay()];
 }
 
+// ---------- Темп ----------
+// «1:05» → 65, «65 сек» → 65, «57-58 с» → 57.5, «4 мин 10 с» → 250, «1:02:30» → 3750, «3 мин» → 180
+export function parseSeconds(raw) {
+  const t = String(raw ?? '').toLowerCase().replace(',', '.').trim();
+  if (!t || /\/\s*км|мин\s*\/|в\s*км/.test(t)) return null; // уже темп на км — не считаем
+  const hms = t.match(/(\d+):(\d{2})(?::(\d{2}))?/);
+  if (hms) {
+    const [a, b, c] = [Number(hms[1]), Number(hms[2]), hms[3] != null ? Number(hms[3]) : null];
+    return c != null ? a * 3600 + b * 60 + c : a * 60 + b;
+  }
+  const range = t.match(/(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)/);
+  const pick = (re) => { const m = t.match(re); return m ? Number(m[1]) : 0; };
+  // \b с русскими буквами не работает — поэтому «после буквы не идёт другая буква»
+  let min = pick(/(\d+(?:\.\d+)?)\s*(?:мин|m(?![a-zа-яё])|')/);
+  let sec = pick(/(\d+(?:\.\d+)?)\s*(?:сек|с(?![a-zа-яё])|s(?![a-zа-яё])|")/);
+  if (range && !/мин/.test(t)) sec = (Number(range[1]) + Number(range[2])) / 2;
+  if (!min && !sec) {
+    const n = t.match(/^(\d+(?:\.\d+)?)$/);
+    if (n) sec = Number(n[1]);
+  }
+  const total = min * 60 + sec;
+  return total > 0 ? total : null;
+}
+
+// Темп мин/км: 330 с на 1000 м → «5:30/км»
+export function paceLabel(seconds, meters) {
+  if (!seconds || !meters) return null;
+  const perKm = Math.round(seconds / (meters / 1000));
+  if (perKm < 100 || perKm > 1200) return null; // быстрее 1:40/км или медленнее 20:00/км — скорее ошибка ввода
+  return `${Math.floor(perKm / 60)}:${String(perKm % 60).padStart(2, '0')}/км`;
+}
+
+// Темп для средних и длинных отрезков (от 600 м). Спринт — без темпа на км.
+function setPace(s) {
+  const m = Number(s.distance_m);
+  if (!m || m < 600) return null;
+  return paceLabel(parseSeconds(s.time_or_pace), m);
+}
+
+// Кроссы и длительные в тексте: «10 км за 50 мин», «12 км, 55 мин», «8 км 36:30» → считаем темп
+export function textPaces(text) {
+  const out = [];
+  const re = /(\d+(?:[.,]\d+)?)\s*км[^\d\n]{0,12}?(\d{1,2}:\d{2}(?::\d{2})?|\d{1,3}(?:[.,]\d+)?\s*мин(?:ут[аыу]?)?(?:\s*\d{1,2}\s*(?:сек|с)(?![a-zа-яё]))?)/gi;
+  for (const m of String(text || '').matchAll(re)) {
+    const km = Number(m[1].replace(',', '.'));
+    if (!km || km < 0.6 || km > 100) continue;
+    const pace = paceLabel(parseSeconds(m[2]), km * 1000);
+    if (pace) out.push(`${m[1]} км за ${m[2].trim()} → темп ≈ ${pace}`);
+  }
+  return out;
+}
+
 // Один повтор/отрезок одной строкой: «400 м ×6, время/темп 1:05, отдых 2 мин»
 function formatSet(s) {
   const parts = [];
   if (s.distance_m) parts.push(`${s.distance_m} м`);
   if (s.reps) parts.push(`×${s.reps}`);
   if (s.time_or_pace) parts.push(`время/темп ${s.time_or_pace}`);
+  const pace = setPace(s);
+  if (pace) parts.push(`темп ≈ ${pace}`);
   if (s.rest_between) parts.push(`отдых ${s.rest_between}`);
   return parts.join(', ');
 }
@@ -131,6 +188,8 @@ export function describeWorkout(w) {
   if (pulse.length) parts.push(`пульс (уд/мин): ${pulse.join(', ')}`);
   parts.push(`RPE ${w.rpe ?? '-'}/10, самочувствие ${w.feeling ?? '-'}/10`);
   if (w.notes) parts.push(`заметка: ${w.notes}`);
+  const paces = textPaces([w.warmup, w.cooldown, w.notes].filter(Boolean).join('\n'));
+  if (paces.length) parts.push(`темп по тексту: ${paces.join('; ')}`);
 
   return `${head}: тренировка — ${parts.join(' | ')}`;
 }
@@ -176,6 +235,8 @@ ${VOLUME_RULE}
 
 ${PULSE_RULE}
 
+${PACE_RULE}
+
 Дай структурированный разбор на русском, используя заголовки **жирным**:
 **Объём и частота:** сколько тренировок и дней отдыха, общий беговой объём (км/минуты), есть ли баланс.
 **Динамика нагрузки:** растёт ли RPE и объём, есть ли резкие скачки.
@@ -208,6 +269,8 @@ export async function getChatReply(contextSummary, history, message, today, athl
 ${VOLUME_RULE}
 
 ${PULSE_RULE}
+
+${PACE_RULE}
 
 Записи тренировок за последние 30 дней:
 ${contextSummary || 'записей нет'}
@@ -245,6 +308,8 @@ ${recentSummary || 'данных нет'}
 ${VOLUME_RULE}
 
 ${PULSE_RULE}
+
+${PACE_RULE}
 
 Дай ответ в 3-4 коротких предложения на русском:
 1. Оценка этой тренировки в контексте предыдущих дней (хорошо выполнена / есть признаки перебора).
