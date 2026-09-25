@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { query, pool, WORKOUT_SELECT, dbReady } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday, isValidDate, daysBetween } from '../streak.js';
-import { getWorkoutFeedback, parseWorkoutText, athleteContext } from '../ai.js';
+import { getWorkoutFeedback, parseWorkoutText, athleteContext, workSignature } from '../ai.js';
 
 const router = Router();
 
@@ -250,11 +250,25 @@ router.post('/', requireTelegramAuth, async (req, res) => {
          ORDER BY w.date DESC, w.session DESC LIMIT 7`,
         [user.id, date, session]
       );
+      // похожая тренировка за последние 4 месяца (та же основная работа, например 6×400)
+      let similar = null;
+      const sig = workSignature(sets.map((x) => ({ ...x, distance_m: parseDistance(x.distance_m), reps: parseInt(x.reps, 10) || null })));
+      if (sig) {
+        try {
+          const prev = await query(
+            `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.id <> $2 AND w.type = 'training' AND w.date >= $3::date - 120
+             AND w.date <= $3::date ORDER BY w.date DESC LIMIT 60`,
+            [user.id, workout.id, date]
+          );
+          similar = prev.rows.find((x) => workSignature(x.sets) === sig) || null;
+        } catch (e) { /* не страшно */ }
+      }
       try {
         aiFeedback = await getWorkoutFeedback(
           { date, session, type, warmup, cooldown, sets, exercises, rpe, feeling, notes, hr_avg: hrAvg, hr_max: hrMax, hr_min: hrMin, competition, isBackdated: date !== today },
           recentRes.rows,
-          await athleteContext(user.id)
+          await athleteContext(user.id),
+          similar
         );
         await query('UPDATE workouts SET ai_feedback = $1 WHERE id = $2', [aiFeedback, workout.id]);
       } catch (err) {
