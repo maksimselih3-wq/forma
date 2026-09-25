@@ -119,6 +119,33 @@ export async function athleteContext(userId) {
       const best = bestResults(comps.rows);
       if (best.length) lines.push(`Лучшие результаты на стартах (по дневнику): ${best.map((b) => `${b.discipline} — ${b.result} (${b.date})`).join('; ')}`);
     } catch (e) { /* колонки ещё нет — не страшно */ }
+    // ближайшие старты из календаря
+    try {
+      const st = await query(
+        `SELECT to_char(date, 'YYYY-MM-DD') AS date, name, discipline, goal FROM planned_starts
+         WHERE user_id = $1 AND date >= CURRENT_DATE ORDER BY date LIMIT 3`, [userId]);
+      if (st.rows.length) {
+        lines.push(`Ближайшие старты: ${st.rows.map((x) => `${x.date} — ${x.name}${x.discipline ? `, ${x.discipline}` : ''}${x.goal ? `, цель ${x.goal}` : ''}`).join('; ')}`);
+      }
+    } catch (e) { /* таблицы ещё нет */ }
+    // утренние отметки: сон, пульс покоя, самочувствие (1–5)
+    try {
+      const mc = await query(
+        `SELECT to_char(date, 'YYYY-MM-DD') AS date, sleep_h, rest_hr, mood FROM morning_checks
+         WHERE user_id = $1 AND date >= CURRENT_DATE - 14 ORDER BY date DESC`, [userId]);
+      if (mc.rows.length) {
+        const fmt = (x) => [x.sleep_h != null && `сон ${Number(x.sleep_h)} ч`, x.rest_hr && `пульс покоя ${x.rest_hr}`, x.mood && `самочувствие ${x.mood}/5`].filter(Boolean).join(', ');
+        lines.push(`Утренние отметки (свежие сверху): ${mc.rows.slice(0, 7).map((x) => `${x.date}: ${fmt(x)}`).join('; ')}`);
+        const hrs = mc.rows.map((x) => x.rest_hr).filter(Boolean);
+        if (hrs.length >= 5) {
+          const recent = hrs.slice(0, 3), base = hrs.slice(3);
+          const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+          if (recent.length === 3 && base.length >= 2 && avg(recent) - avg(base) >= 5) {
+            lines.push(`Внимание: пульс покоя последние 3 дня в среднем на ${Math.round(avg(recent) - avg(base))} уд/мин выше обычного — возможно, организм не восстановился или начинается болезнь.`);
+          }
+        }
+      }
+    } catch (e) { /* таблицы ещё нет */ }
     return lines.join('\n');
   } catch (err) {
     console.error('Athlete context failed:', err.message);
@@ -347,7 +374,7 @@ ${contextSummary || 'записей нет'}
  * Fom оценивает тренировку в контексте предыдущих дней
  * и даёт короткий фидбек + совет по восстановлению.
  */
-export async function getWorkoutFeedback(workout, recentWorkouts, athlete = '') {
+export async function getWorkoutFeedback(workout, recentWorkouts, athlete = '', similar = null) {
   const recentSummary = recentWorkouts.map(describeWorkout).join('\n');
   const dayLabel = workout.isBackdated ? 'Тренировка (внесена задним числом)' : 'Сегодняшняя тренировка';
 
@@ -360,7 +387,7 @@ ${describeWorkout({ ...workout, type: 'training' })}
 
 Предыдущие дни для контекста:
 ${recentSummary || 'данных нет'}
-
+${similar ? `\nПохожая тренировка раньше (та же основная работа):\n${describeWorkout(similar)}\nКоротко сравни с ней: время отрезков, пульс, RPE — стало лучше или хуже.\n` : ''}
 ${VOLUME_RULE}
 
 ${PULSE_RULE}
@@ -436,3 +463,36 @@ export async function parseWorkoutText(text) {
   return JSON.parse(match[0]);
 }
 
+
+
+/**
+ * Итоги недели от Fom — короткое сообщение в бота по воскресеньям.
+ */
+export async function getWeeklyDigest(workouts, athlete = '', name = '') {
+  const summary = workouts.map(describeWorkout).join('\n');
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
+Подведи итоги недели спортсмена${name ? ` по имени ${name}` : ''} для короткого сообщения в Telegram.
+
+Записи за неделю (пн–вс):
+${summary}
+
+${VOLUME_RULE}
+
+${PACE_RULE}
+
+Формат — 4–6 коротких строк, без заголовков и markdown-звёздочек, можно 2–3 эмодзи:
+- сколько тренировок и дней отдыха, примерный объём (км) и ОФП;
+- лучшая или самая тяжёлая тренировка недели одной фразой;
+- что заметил в самочувствии, пульсе, RPE (если есть данные);
+- одна тёплая фраза-поддержка без советов, как тренироваться дальше.
+Не выдумывай цифры, которых нет.`;
+  return callClaude({ model: MODEL, maxTokens: 500, messages: [{ role: 'user', content: prompt }] });
+}
+
+// «Подпись» основной работы: одинаковые отрезки → похожие тренировки (например, «400x6»)
+export function workSignature(sets) {
+  const parts = (Array.isArray(sets) ? sets : [])
+    .filter((x) => x.distance_m)
+    .map((x) => `${x.distance_m}x${x.reps || 1}`);
+  return parts.length ? parts.join('+') : null;
+}
