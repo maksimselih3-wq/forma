@@ -26,6 +26,48 @@ const PULSE_RULE = `Если указан пульс: «средний» и «м
 // Темп бега: только для средних и длинных дистанций
 const PACE_RULE = `Темп: для средних и длинных отрезков и непрерывного бега (от ~600 м, кроссы, темповые, длительные) оценивай работу в темпе мин/км. Например, 10 км за 50 мин — это 5:00/км. Где в записи стоит «темп ≈ …/км», он уже посчитан — бери его, не пересчитывай. Сравнивай темп с прошлыми похожими тренировками и с пульсом (быстрее при том же пульсе — хороший знак). Для спринта (короткие отрезки до ~400 м), прыжков, метаний и ОФП темп на километр не считай — там важны время отрезка и качество.`;
 
+// Старты (соревнования)
+const COMP_RULE = `Если запись помечена как СТАРТ (соревнование) — это не обычная тренировка. Оцени результат: сравни с прошлыми стартами в этой дисциплине и с лучшими результатами спортсмена (если они есть ниже). Если это личный рекорд — обязательно отметь и порадуйся вместе с ним. Если результат хуже — без критики, коротко отметь, что могло повлиять (самочувствие, пульс, нагрузка в предыдущие дни), и не делай выводов за тренера.`;
+
+// ---------- Результаты стартов ----------
+// Прыжки и метания — «больше = лучше» (метры), бег и ходьба — «меньше = лучше» (время)
+const FIELD_EVENT_RE = /прыж|длин|тройн|высот|шест|ядр|диск|копь|молот|метан|толк/i;
+export function higherIsBetter(discipline) {
+  return FIELD_EVENT_RE.test(discipline || '');
+}
+// «10.95» → 10.95 с, «1:58.4» → 118.4 с, «15:20,3» → 920.3 с, «7,12 м» → 7.12 м
+export function parseResult(result, discipline) {
+  const t = String(result || '').replace(/,/g, '.').trim();
+  const token = t.match(/\d[\d:.]*/)?.[0];
+  if (!token) return null;
+  if (higherIsBetter(discipline)) {
+    const n = parseFloat(token);
+    return Number.isFinite(n) ? n : null;
+  }
+  const parts = token.split(':').map(Number);
+  if (parts.some((x) => !Number.isFinite(x))) return null;
+  return parts.reduce((acc, x) => acc * 60 + x, 0);
+}
+// Ключ дисциплины для группировки: «100 м», «100м», «100 метров» — одно и то же
+export function disciplineKey(d) {
+  return String(d || '').toLowerCase().replace(/метр(ов|а)?/g, 'м').replace(/\s+/g, '').replace(/ё/g, 'е');
+}
+// Лучший результат в каждой дисциплине по списку записей
+export function bestResults(workouts) {
+  const best = {};
+  for (const w of workouts) {
+    const c = w.competition;
+    if (!c?.discipline || !c?.result) continue;
+    const v = parseResult(c.result, c.discipline);
+    if (v == null) continue;
+    const key = disciplineKey(c.discipline);
+    const cur = best[key];
+    const better = !cur || (higherIsBetter(c.discipline) ? v > cur.value : v < cur.value);
+    if (better) best[key] = { value: v, discipline: c.discipline, result: c.result, date: String(w.date).slice(0, 10), name: c.name, id: w.id };
+  }
+  return Object.values(best);
+}
+
 // Как пользоваться данными о спортсмене (пол, возраст, рост, вес и т.д.)
 const ATHLETE_RULE = `Если ниже есть данные о спортсмене — учитывай их, чтобы оценки были точнее: возраст и пол (нормы пульса и восстановления), вес (нагрузка на суставы в прыжках и беге), стаж и уровень (какой объём для него привычен), дисциплину, личные рекорды и цель, травмы и ограничения (будь внимателен к нагрузке на эти места). Не комментируй внешность и вес тела, не советуй худеть или набирать вес и не давай диет, если спортсмен сам об этом не спросит. Если данных нет — просто не упоминай их.`;
 
@@ -71,6 +113,12 @@ export async function athleteContext(userId) {
     if (p.records) lines.push(`Личные рекорды: ${p.records}`);
     if (p.goal) lines.push(`Цель: ${p.goal}`);
     if (p.injuries) lines.push(`Травмы и ограничения: ${p.injuries}`);
+    // лучшие результаты на стартах, которые спортсмен записал в дневник
+    try {
+      const comps = await query(`SELECT id, date, competition FROM workouts WHERE user_id = $1 AND competition IS NOT NULL`, [userId]);
+      const best = bestResults(comps.rows);
+      if (best.length) lines.push(`Лучшие результаты на стартах (по дневнику): ${best.map((b) => `${b.discipline} — ${b.result} (${b.date})`).join('; ')}`);
+    } catch (e) { /* колонки ещё нет — не страшно */ }
     return lines.join('\n');
   } catch (err) {
     console.error('Athlete context failed:', err.message);
@@ -175,6 +223,10 @@ export function describeWorkout(w) {
   }
 
   const parts = [];
+  const c = w.competition;
+  if (c && (c.discipline || c.result)) {
+    parts.push(`СТАРТ${c.name ? ` «${c.name}»` : ''}: ${[c.discipline, c.result && `результат ${c.result}`, c.place && `${c.place} место`].filter(Boolean).join(', ')}`);
+  }
   if (w.warmup) parts.push(`разминка: ${w.warmup}`);
   const sets = (Array.isArray(w.sets) ? w.sets : []).map(formatSet).filter(Boolean);
   if (sets.length) parts.push(`беговая работа: ${sets.join('; ')}`);
@@ -237,6 +289,8 @@ ${PULSE_RULE}
 
 ${PACE_RULE}
 
+${COMP_RULE}
+
 Дай структурированный разбор на русском, используя заголовки **жирным**:
 **Объём и частота:** сколько тренировок и дней отдыха, общий беговой объём (км/минуты), есть ли баланс.
 **Динамика нагрузки:** растёт ли RPE и объём, есть ли резкие скачки.
@@ -271,6 +325,8 @@ ${VOLUME_RULE}
 ${PULSE_RULE}
 
 ${PACE_RULE}
+
+${COMP_RULE}
 
 Записи тренировок за последние 30 дней:
 ${contextSummary || 'записей нет'}
@@ -310,6 +366,8 @@ ${VOLUME_RULE}
 ${PULSE_RULE}
 
 ${PACE_RULE}
+
+${COMP_RULE}
 
 Дай ответ в 3-4 коротких предложения на русском:
 1. Оценка этой тренировки в контексте предыдущих дней (хорошо выполнена / есть признаки перебора).
