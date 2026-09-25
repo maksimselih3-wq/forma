@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth, validateInitData } from '../telegramAuth.js';
+import { socialReady, isCoachOf, shareGroup, newGroupCode, refCode, referralStats, REF_MIN_WORKOUTS, REF_MAX_BONUS } from '../social.js';
 
 const router = Router();
 
@@ -70,8 +71,9 @@ async function getVisibleWorkout(meId, workoutId) {
   const w = r.rows[0];
   if (!w) return null;
   if (w.user_id === meId) return w;
+  if (await isCoachOf(meId, w.user_id)) return w; // тренер видит все записи своих спортсменов
   if (w.visibility !== 'public') return null;
-  return (await areFriends(meId, w.user_id)) ? w : null;
+  return (await areFriends(meId, w.user_id)) || (await shareGroup(meId, w.user_id)) ? w : null;
 }
 
 // Уведомление в Telegram от бота (если человек когда-то запускал бота). Ошибки не мешают приложению.
@@ -402,6 +404,192 @@ router.delete('/comments/:id', async (req, res) => {
     [req.params.id, req.me.id]
   );
   if (result.rows.length === 0) return res.status(404).json({ error: 'Комментарий не найден' });
+  res.json({ ok: true });
+});
+
+// ===================================================================
+//  ГРУППЫ: команды и тренерские группы
+// ===================================================================
+const BOT_USERNAME = process.env.BOT_USERNAME || 'forma2ko5_bot';
+const MAX_GROUPS = 10;       // в скольких группах может состоять человек
+const MAX_MEMBERS = 150;     // сколько людей в одной группе
+
+function groupLink(code) { return `https://t.me/${BOT_USERNAME}?start=g_${code}`; }
+
+async function myMembership(groupId, meId) {
+  const r = await query(
+    `SELECT g.*, m.role FROM groups g JOIN group_members m ON m.group_id = g.id
+     WHERE g.id = $1 AND m.user_id = $2`, [groupId, meId]);
+  return r.rows[0] || null;
+}
+
+// Начало текущей недели (понедельник) по дате клиента
+function weekStart(req) {
+  const raw = String(req.headers['x-client-date'] || '');
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? new Date(raw + 'T00:00:00Z') : new Date();
+  const dow = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - dow);
+  return d.toISOString().slice(0, 10);
+}
+
+// GET /api/friends/invite — моя ссылка-приглашение и сколько друзей пришло
+router.get('/invite', async (req, res) => {
+  const stats = await referralStats(req.me.id);
+  res.json({
+    link: `https://t.me/${BOT_USERNAME}?start=r_${refCode(req.me.id)}`,
+    ...stats, min_workouts: REF_MIN_WORKOUTS, max_bonus: REF_MAX_BONUS,
+  });
+});
+
+// GET /api/friends/groups — мои группы
+router.get('/groups', async (req, res) => {
+  await socialReady;
+  const r = await query(
+    `SELECT g.id, g.name, g.coach_mode, g.invite_code, g.owner_id = $1 AS is_owner, m.role,
+       (SELECT count(*)::int FROM group_members x WHERE x.group_id = g.id) AS members
+     FROM groups g JOIN group_members m ON m.group_id = g.id AND m.user_id = $1
+     ORDER BY m.joined_at`, [req.me.id]);
+  res.json({ groups: r.rows.map((g) => ({ ...g, link: groupLink(g.invite_code) })) });
+});
+
+// POST /api/friends/groups { name, coach_mode } — создать группу
+router.post('/groups', async (req, res) => {
+  await socialReady;
+  const name = String(req.body.name || '').trim().slice(0, 60);
+  if (name.length < 2) return res.status(400).json({ error: 'Придумай название группы' });
+  const cnt = await query('SELECT count(*)::int AS n FROM group_members WHERE user_id = $1', [req.me.id]);
+  if (cnt.rows[0].n >= MAX_GROUPS) return res.status(400).json({ error: `Можно состоять максимум в ${MAX_GROUPS} группах` });
+  let g = null;
+  for (let i = 0; i < 5 && !g; i++) {
+    const r = await query(
+      `INSERT INTO groups (name, owner_id, coach_mode, invite_code) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (invite_code) DO NOTHING RETURNING *`,
+      [name, req.me.id, !!req.body.coach_mode, newGroupCode()]);
+    g = r.rows[0];
+  }
+  if (!g) return res.status(500).json({ error: 'Не удалось создать группу' });
+  await query(`INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, $3)`,
+    [g.id, req.me.id, g.coach_mode ? 'coach' : 'owner']);
+  res.json({ group: { id: g.id, name: g.name, coach_mode: g.coach_mode, invite_code: g.invite_code, link: groupLink(g.invite_code) } });
+});
+
+// GET /api/friends/groups/preview/:code — что за группа (перед вступлением)
+router.get('/groups/preview/:code', async (req, res) => {
+  await socialReady;
+  const code = String(req.params.code || '').toLowerCase();
+  const r = await query(
+    `SELECT g.id, g.name, g.coach_mode, u.first_name AS owner_first_name, u.last_name AS owner_last_name, u.username AS owner_username,
+       (SELECT count(*)::int FROM group_members x WHERE x.group_id = g.id) AS members,
+       EXISTS (SELECT 1 FROM group_members x WHERE x.group_id = g.id AND x.user_id = $2) AS joined
+     FROM groups g JOIN users u ON u.id = g.owner_id WHERE g.invite_code = $1`, [code, req.me.id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'Группа не найдена — проверь код' });
+  res.json({ group: r.rows[0] });
+});
+
+// POST /api/friends/groups/join { code }
+router.post('/groups/join', async (req, res) => {
+  await socialReady;
+  const code = String(req.body.code || '').trim().toLowerCase();
+  const g = (await query('SELECT * FROM groups WHERE invite_code = $1', [code])).rows[0];
+  if (!g) return res.status(404).json({ error: 'Группа не найдена — проверь код' });
+  const cnt = await query(
+    `SELECT (SELECT count(*)::int FROM group_members WHERE group_id = $1) AS members,
+            (SELECT count(*)::int FROM group_members WHERE user_id = $2) AS mine`, [g.id, req.me.id]);
+  if (cnt.rows[0].members >= MAX_MEMBERS) return res.status(400).json({ error: 'В группе уже максимум участников' });
+  if (cnt.rows[0].mine >= MAX_GROUPS) return res.status(400).json({ error: `Можно состоять максимум в ${MAX_GROUPS} группах` });
+  const ins = await query(
+    `INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')
+     ON CONFLICT (group_id, user_id) DO NOTHING RETURNING user_id`, [g.id, req.me.id]);
+  if (ins.rows.length) {
+    const owner = await query('SELECT telegram_id FROM users WHERE id = $1', [g.owner_id]);
+    notify(owner.rows[0]?.telegram_id, `👥 ${displayName(req.me)} вступил в группу «${g.name}»`);
+  }
+  res.json({ group: { id: g.id, name: g.name, coach_mode: g.coach_mode } });
+});
+
+// GET /api/friends/groups/:id — участники, рейтинг недели
+router.get('/groups/:id', async (req, res) => {
+  const gid = parseInt(req.params.id, 10);
+  const g = gid && (await myMembership(gid, req.me.id));
+  if (!g) return res.status(404).json({ error: 'Группа не найдена' });
+  const monday = weekStart(req);
+  const members = await query(
+    `SELECT ${PUBLIC_USER}, m.role,
+       (SELECT count(*)::int FROM workouts w WHERE w.user_id = u.id AND w.type = 'training' AND w.date >= $2::date) AS week_trainings,
+       (SELECT COALESCE(round(sum(COALESCE(s.distance_m, 0) * COALESCE(s.reps, 1)) / 1000.0, 1), 0)::float
+          FROM workout_sets s JOIN workouts w ON w.id = s.workout_id
+          WHERE w.user_id = u.id AND w.date >= $2::date) AS week_km,
+       (SELECT to_char(max(w.date), 'YYYY-MM-DD') FROM workouts w WHERE w.user_id = u.id) AS last_entry
+     FROM group_members m JOIN users u ON u.id = m.user_id
+     WHERE m.group_id = $1
+     ORDER BY week_trainings DESC, week_km DESC, u.current_streak DESC`, [gid, monday]);
+  const isCoach = g.coach_mode && g.owner_id === req.me.id;
+  res.json({
+    group: {
+      id: g.id, name: g.name, coach_mode: g.coach_mode, is_owner: g.owner_id === req.me.id, is_coach: isCoach,
+      invite_code: g.invite_code, link: groupLink(g.invite_code),
+    },
+    members: members.rows,
+  });
+});
+
+// GET /api/friends/groups/:id/feed — лента группы: открытые тренировки участников (тренеру — все)
+router.get('/groups/:id/feed', async (req, res) => {
+  const gid = parseInt(req.params.id, 10);
+  const g = gid && (await myMembership(gid, req.me.id));
+  if (!g) return res.status(404).json({ error: 'Группа не найдена' });
+  const isCoach = g.coach_mode && g.owner_id === req.me.id;
+  const r = await query(
+    `${WORKOUT_SELECT}
+     WHERE w.user_id IN (SELECT user_id FROM group_members WHERE group_id = $1)
+       AND (w.visibility = 'public' OR w.user_id = $2 OR $3)
+       AND w.date > CURRENT_DATE - 30
+     ORDER BY w.date DESC, w.id DESC LIMIT 40`, [gid, req.me.id, isCoach]);
+  res.json({ workouts: await withSocial(r.rows, req.me.id) });
+});
+
+// GET /api/friends/groups/:id/members/:uid — тренер смотрит дневник спортсмена целиком
+router.get('/groups/:id/members/:uid', async (req, res) => {
+  const gid = parseInt(req.params.id, 10);
+  const uid = parseInt(req.params.uid, 10);
+  const g = gid && (await myMembership(gid, req.me.id));
+  if (!g || !g.coach_mode || g.owner_id !== req.me.id) return res.status(403).json({ error: 'Только для тренера группы' });
+  const inGroup = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2', [gid, uid]);
+  if (!inGroup.rows.length) return res.status(404).json({ error: 'Спортсмен не в группе' });
+  const [user, workouts, checks] = await Promise.all([
+    query(`SELECT ${PUBLIC_USER} FROM users u WHERE u.id = $1`, [uid]),
+    query(`${WORKOUT_SELECT} WHERE w.user_id = $1 ORDER BY w.date DESC, w.session LIMIT 40`, [uid]),
+    query(`SELECT to_char(date, 'YYYY-MM-DD') AS date, sleep_h, rest_hr, mood FROM morning_checks
+           WHERE user_id = $1 AND date > CURRENT_DATE - 7 ORDER BY date DESC`, [uid]).catch(() => ({ rows: [] })),
+  ]);
+  res.json({
+    user: user.rows[0],
+    workouts: await withSocial(workouts.rows, req.me.id),
+    checks: checks.rows.map((c) => ({ ...c, sleep_h: c.sleep_h == null ? null : Number(c.sleep_h) })),
+  });
+});
+
+// POST /api/friends/groups/:id/leave — выйти из группы (создатель удаляет группу целиком)
+router.post('/groups/:id/leave', async (req, res) => {
+  const gid = parseInt(req.params.id, 10);
+  const g = gid && (await myMembership(gid, req.me.id));
+  if (!g) return res.status(404).json({ error: 'Группа не найдена' });
+  if (g.owner_id === req.me.id) {
+    await query('DELETE FROM groups WHERE id = $1 AND owner_id = $2', [gid, req.me.id]);
+    return res.json({ ok: true, deleted: true });
+  }
+  await query('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [gid, req.me.id]);
+  res.json({ ok: true });
+});
+
+// POST /api/friends/groups/:id/remove { userId } — создатель убирает участника
+router.post('/groups/:id/remove', async (req, res) => {
+  const gid = parseInt(req.params.id, 10);
+  const uid = parseInt(req.body.userId, 10);
+  const g = gid && (await myMembership(gid, req.me.id));
+  if (!g || g.owner_id !== req.me.id) return res.status(403).json({ error: 'Только создатель группы' });
+  if (uid === req.me.id) return res.status(400).json({ error: 'Себя убрать нельзя' });
+  await query('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [gid, uid]);
   res.json({ ok: true });
 });
 
