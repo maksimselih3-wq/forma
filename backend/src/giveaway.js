@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { query, dbReady } from './db.js';
+import { referralBonuses, referralStats } from './social.js';
 
 /**
  * Розыгрыши подарков среди тех, кто держит ЧЕСТНУЮ серию.
@@ -145,10 +146,14 @@ export async function giveawayStatus(userId) {
   );
   const lastByKind = Object.fromEntries(last.rows.map((r) => [r.kind, r]));
 
-  const out = { honest_streak: streak };
+  // бонусные билеты за приглашённых друзей — только в недельном розыгрыше и только если сам участвуешь
+  let refBonus = 0;
+  try { refBonus = (await referralStats(userId)).bonus; } catch (e) {}
+  const out = { honest_streak: streak, ref_bonus: refBonus };
   for (const kind of Object.keys(GIVEAWAYS)) {
     const g = GIVEAWAYS[kind];
-    const t = tickets(kind, streak);
+    const base = tickets(kind, streak);
+    const t = base > 0 && kind === 'week' ? base + refBonus : base;
     out[kind] = {
       title: g.title,
       emoji: g.emoji,
@@ -220,11 +225,14 @@ export async function runDraw(kind, send, { force = false } = {}) {
   const adminRow = admin ? await query('SELECT id FROM users WHERE telegram_id = $1', [admin]) : { rows: [] };
   const adminUserId = adminRow.rows[0]?.id;
 
+  let bonuses = {};
+  if (kind === 'week') { try { bonuses = await referralBonuses(); } catch (e) {} }
   const entries = [];
   for (const [userId, dates] of Object.entries(byUser)) {
     if (Number(userId) === adminUserId) continue;
     const streak = streakFromDates(dates, today);
-    const t = tickets(kind, streak);
+    const base = tickets(kind, streak);
+    const t = base > 0 ? base + (bonuses[userId] || 0) : 0; // бонус за друзей — только тем, кто сам участвует
     if (t > 0) entries.push({ user_id: Number(userId), streak, tickets: t });
   }
 
