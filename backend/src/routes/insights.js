@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
-import { getPeriodInsight } from '../ai.js';
+import { getPeriodInsight, athleteContext } from '../ai.js';
 import { getClientToday } from '../streak.js';
 
 const router = Router();
@@ -43,7 +43,7 @@ router.get('/', requireTelegramAuth, async (req, res) => {
       return res.json({ insight: null, workoutsCount: 0, period });
     }
 
-    const insight = await getPeriodInsight(result.rows, period);
+    const insight = await getPeriodInsight(result.rows, period, await athleteContext(user.id));
     res.json({ insight, workoutsCount: result.rows.length, period });
   } catch (err) {
     console.error('Insight generation failed:', err.message);
