@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
-import { getChatReply, describeWorkout } from '../ai.js';
+import { getChatReply, describeWorkout, athleteContext } from '../ai.js';
 import { getClientToday } from '../streak.js';
 
 const router = Router();
@@ -39,7 +39,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
 
     const contextSummary = result.rows.map(describeWorkout).join('\n');
 
-    const reply = await getChatReply(contextSummary, history, message, today);
+    const reply = await getChatReply(contextSummary, history, message, today, await athleteContext(user.id));
     res.json({ reply });
   } catch (err) {
     console.error('Chat failed:', err.message);
