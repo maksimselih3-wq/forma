@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { query } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { GIVEAWAYS, giveawayStatus, runDraw, startGiveawayScheduler, isAdmin, honestStreak, nextDrawAt } from '../giveaway.js';
+import { startReminderScheduler, reminderText } from '../reminders.js';
 
 /**
  * Telegram-бот Forma:
@@ -47,7 +48,10 @@ async function tg(method, body) {
 async function configureBot() {
   if (!BOT_TOKEN) return;
 
-  await tg('setMyName', { name: 'Forma' });
+  // Имя меняем, только если оно другое: Telegram разрешает менять имя редко
+  // (иначе в логах «Too Many Requests» при каждом перезапуске)
+  const name = await tg('getMyName', {});
+  if (name?.ok && name.result?.name !== 'Forma') await tg('setMyName', { name: 'Forma' });
 
   // Текст в пустом чате до нажатия «Старт» (до 512 символов)
   await tg('setMyDescription', {
@@ -98,6 +102,10 @@ setTimeout(configureBot, 3000);
 // Розыгрыши: сервер сам подводит итоги по расписанию и пишет победителям
 const sendText = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, reply_markup: OPEN_BUTTON });
 startGiveawayScheduler(sendText);
+
+// Вечернее напоминание: в 21:00 (МСК), если за сегодня ещё нет записи
+const sendHtml = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
+startReminderScheduler(sendHtml);
 
 function mskDateLabel(d) {
   return new Date(d).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
@@ -171,6 +179,17 @@ async function handleMessage(msg) {
   if (text === '/draw_week' || text === '/draw_month') {
     if (!(await isAdmin(msg.from.id))) return;
     await runDraw(text === '/draw_week' ? 'week' : 'month', sendText, { force: true });
+    return;
+  }
+
+  // Посмотреть, как выглядит напоминание — только для админа
+  if (text === '/remind_test') {
+    if (!(await isAdmin(msg.from.id))) return;
+    const u = await query(
+      `SELECT u.first_name, u.current_streak, (SELECT MAX(date) FROM workouts w WHERE w.user_id = u.id) AS last_date
+       FROM users u WHERE telegram_id = $1`, [msg.from.id]);
+    const today = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
+    await sendHtml(chatId, reminderText(u.rows[0] || {}, today));
     return;
   }
 
