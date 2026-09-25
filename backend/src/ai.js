@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { query } from './db.js';
 dotenv.config();
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -21,6 +22,62 @@ const VOLUME_RULE = `Объём (километры, минуты, отрезк�
 
 // Как читать пульс
 const PULSE_RULE = `Если указан пульс: «средний» и «максимальный» — за тренировку, «минимальный» — насколько низко пульс опускался в паузах отдыха между отрезками/подходами. Чем ниже пульс успевает опуститься в паузах, тем лучше восстановление. Сравнивай с прошлыми тренировками похожей работы: если в паузах пульс стал опускаться хуже (минимальный выше обычного) или максимальный выше при той же работе — это признак накопленной усталости. Если пульса нет — не упоминай его. Не ставь медицинских диагнозов.`;
+
+// Как пользоваться данными о спортсмене (пол, возраст, рост, вес и т.д.)
+const ATHLETE_RULE = `Если ниже есть данные о спортсмене — учитывай их, чтобы оценки были точнее: возраст и пол (нормы пульса и восстановления), вес (нагрузка на суставы в прыжках и беге), стаж и уровень (какой объём для него привычен), дисциплину, личные рекорды и цель, травмы и ограничения (будь внимателен к нагрузке на эти места). Не комментируй внешность и вес тела, не советуй худеть или набирать вес и не давай диет, если спортсмен сам об этом не спросит. Если данных нет — просто не упоминай их.`;
+
+const SPORTS_RU = {
+  athletics: 'лёгкая атлетика', running: 'бег', football: 'футбол', basketball: 'баскетбол', volleyball: 'волейбол',
+  hockey: 'хоккей', swimming: 'плавание', cycling: 'велоспорт', triathlon: 'триатлон', combat: 'единоборства',
+  tennis: 'теннис', fitness: 'фитнес', other: 'другое',
+};
+const LEVELS_RU = { beginner: 'новичок', amateur: 'любитель', ranked: 'разрядник', kms: 'КМС', ms: 'МС и выше' };
+
+/**
+ * Короткая справка о спортсмене для Fom: пол, возраст, рост, вес, пульс покоя, стаж, уровень,
+ * вид спорта, рекорды, цель, травмы. Эти данные видит только сам спортсмен и Fom.
+ */
+// «1 год», «3 года», «21 год», «15 лет»
+function yearsRu(n) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  const w = a > 10 && a < 20 ? 'лет' : b === 1 ? 'год' : b >= 2 && b <= 4 ? 'года' : 'лет';
+  return `${n} ${w}`;
+}
+
+export async function athleteContext(userId) {
+  try {
+    const u = await query('SELECT sport, discipline FROM users WHERE id = $1', [userId]);
+    let p = {};
+    try {
+      const r = await query('SELECT * FROM athlete_profiles WHERE user_id = $1', [userId]);
+      p = r.rows[0] || {};
+    } catch (e) { /* таблицы ещё нет — не страшно */ }
+    const sport = u.rows[0]?.sport;
+    const discipline = u.rows[0]?.discipline;
+    const parts = [];
+    if (p.sex) parts.push(p.sex === 'f' ? 'женщина' : 'мужчина');
+    if (p.birth_year) parts.push(`возраст ${yearsRu(new Date().getFullYear() - p.birth_year)}`);
+    if (p.height_cm) parts.push(`рост ${p.height_cm} см`);
+    if (p.weight_kg) parts.push(`вес ${Number(p.weight_kg)} кг`);
+    if (p.rest_hr) parts.push(`пульс в покое ${p.rest_hr}`);
+    if (p.experience_years != null) parts.push(`стаж ${yearsRu(p.experience_years)}`);
+    if (p.level) parts.push(`уровень: ${LEVELS_RU[p.level] || p.level}`);
+    if (sport) parts.push(`вид спорта: ${SPORTS_RU[sport] || sport}${discipline ? ' — ' + discipline : ''}`);
+    const lines = [];
+    if (parts.length) lines.push(parts.join(', '));
+    if (p.records) lines.push(`Личные рекорды: ${p.records}`);
+    if (p.goal) lines.push(`Цель: ${p.goal}`);
+    if (p.injuries) lines.push(`Травмы и ограничения: ${p.injuries}`);
+    return lines.join('\n');
+  } catch (err) {
+    console.error('Athlete context failed:', err.message);
+    return '';
+  }
+}
+
+function athleteBlock(athlete) {
+  return athlete ? `\n\nО спортсмене:\n${athlete}\n\n${ATHLETE_RULE}` : '';
+}
 
 const WEEKDAYS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 
@@ -54,7 +111,7 @@ function formatExercise(e) {
  */
 export function describeWorkout(w) {
   const d = String(w.date).slice(0, 10);
-  const head = `${d} (${weekday(d)})`;
+  const head = `${d} (${weekday(d)})${w.session > 1 ? ', вторая тренировка дня' : ''}`;
 
   if (w.type === 'rest') {
     return `${head}: отдых${w.notes ? `, заметка: ${w.notes}` : ''}`;
@@ -105,10 +162,10 @@ async function callClaude({ model, maxTokens, system, messages }) {
 /**
  * Разбор нагрузки за период (неделя/месяц): тренды, риск перегруза, рекомендации.
  */
-export async function getPeriodInsight(workouts, period) {
+export async function getPeriodInsight(workouts, period, athlete = '') {
   const summary = workouts.map(describeWorkout).join('\n');
 
-  const prompt = `${FOM_INTRO}
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
 
 Сейчас ты как помощник, который раз в ${period === 'month' ? 'месяц' : 'неделю'} делает разбор тренировочного процесса спортсмена, как бухгалтер сводит баланс.
 
@@ -141,8 +198,8 @@ ${PULSE_RULE}
  * history — предыдущие сообщения диалога (без текущего вопроса).
  * today — сегодняшняя дата пользователя 'ГГГГ-ММ-ДД'.
  */
-export async function getChatReply(contextSummary, history, message, today) {
-  const systemPrompt = `${FOM_INTRO}
+export async function getChatReply(contextSummary, history, message, today, athlete = '') {
+  const systemPrompt = `${FOM_INTRO}${athleteBlock(athlete)}
 Ты заботливый помощник спортсмена.
 Ты отвечаешь на вопросы, опираясь ТОЛЬКО на реальные данные его тренировок, которые даны ниже. Если чего-то в данных нет — честно скажи, что не можешь это посчитать, не выдумывай цифры.
 
@@ -171,11 +228,11 @@ ${contextSummary || 'записей нет'}
  * Fom оценивает тренировку в контексте предыдущих дней
  * и даёт короткий фидбек + совет по восстановлению.
  */
-export async function getWorkoutFeedback(workout, recentWorkouts) {
+export async function getWorkoutFeedback(workout, recentWorkouts, athlete = '') {
   const recentSummary = recentWorkouts.map(describeWorkout).join('\n');
   const dayLabel = workout.isBackdated ? 'Тренировка (внесена задним числом)' : 'Сегодняшняя тренировка';
 
-  const prompt = `${FOM_INTRO}
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
 Ты заботливый "бухгалтер нагрузки" спортсмена.
 Тебе дана тренировка и записи за дни перед ней.
 
