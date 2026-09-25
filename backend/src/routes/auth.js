@@ -2,12 +2,14 @@ import { Router } from 'express';
 import { query, dbReady } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday } from '../streak.js';
+import { remindersReady, setReminderEnabled } from '../reminders.js';
 
 const router = Router();
 
 // POST /api/auth/login — вызывается один раз при открытии Mini App
 router.post('/login', requireTelegramAuth, async (req, res) => {
   const tgUser = req.telegramUser;
+  await remindersReady; // чтобы в ответе уже была настройка напоминаний
 
   const existing = await query('SELECT * FROM users WHERE telegram_id = $1', [tgUser.id]);
 
@@ -60,6 +62,18 @@ router.post('/avatar', requireTelegramAuth, async (req, res) => {
   if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
 
   res.json({ ok: true, avatar_data: result.rows[0].avatar_data });
+});
+
+// POST /api/auth/reminder { enabled } — вечернее напоминание от бота вкл/выкл
+router.post('/reminder', requireTelegramAuth, async (req, res) => {
+  try {
+    const row = await setReminderEnabled(req.telegramUser.id, req.body?.enabled !== false);
+    if (!row) return res.status(404).json({ error: 'User not found' });
+    res.json({ ok: true, remind_enabled: row.remind_enabled });
+  } catch (err) {
+    console.error('Reminder toggle failed:', err.message);
+    res.status(500).json({ error: 'Не удалось сохранить настройку' });
+  }
 });
 
 // Какие виды спорта можно выбрать (названия и значки — на стороне приложения)
