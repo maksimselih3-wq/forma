@@ -4,6 +4,7 @@ import { query } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { GIVEAWAYS, giveawayStatus, runDraw, startGiveawayScheduler, isAdmin, honestStreak, nextDrawAt } from '../giveaway.js';
 import { startReminderScheduler, reminderText, sendWeeklyDigests } from '../reminders.js';
+import { rememberReferral } from '../social.js';
 
 /**
  * Telegram-бот Forma:
@@ -142,6 +143,19 @@ async function handleMessage(msg) {
   const name = escapeHtml(msg.from?.first_name);
 
   if (text.startsWith('/start')) {
+    const payload = text.split(/\s+/)[1] || '';
+    // приглашение в группу: кнопка открывает приложение сразу на вступлении
+    const g = /^g_([a-z0-9]{4,12})$/i.exec(payload);
+    if (g) {
+      await tg('sendMessage', {
+        chat_id: chatId,
+        text: `👥 Тебя пригласили в группу в Forma!\n\nЖми кнопку — откроется приложение и предложит вступить.`,
+        reply_markup: { inline_keyboard: [[{ text: '👥 Вступить в группу', web_app: { url: `${APP_URL}?join=${g[1].toLowerCase()}` } }]] },
+      });
+      return;
+    }
+    // приглашение от друга: запоминаем, кто позвал
+    if (/^r_/i.test(payload)) await rememberReferral(msg.from.id, payload).catch(() => {});
     const sent = await tg('sendPhoto', {
       chat_id: chatId,
       photo: WELCOME_IMAGE,
