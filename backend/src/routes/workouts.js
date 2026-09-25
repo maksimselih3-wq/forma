@@ -55,6 +55,17 @@ function txt(v, max = 60) {
   return s ? s.slice(0, max) : null;
 }
 
+// Дистанция в метрах: «400» → 400, «10 км» → 10000, «1,5 км» → 1500, «10k» → 10000, «800м» → 800
+function parseDistance(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return v > 0 && v <= 1000000 ? Math.round(v) : null;
+  const t = String(v).toLowerCase().replace(',', '.').replace(/\s+/g, '');
+  const n = parseFloat(t);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const m = /км|km|k$/.test(t) ? n * 1000 : n;
+  return m <= 1000000 ? Math.round(m) : null;
+}
+
 // Упражнения силовой/ОФП: оставляем только строки, где указано название
 function cleanExercises(list) {
   if (!Array.isArray(list)) return [];
@@ -77,7 +88,7 @@ async function saveChildren(client, workoutId, sets, exercises) {
       await client.query(
         `INSERT INTO workout_sets (workout_id, order_index, distance_m, reps, time_or_pace, rest_between)
          VALUES ($1,$2,$3,$4,$5,$6)`,
-        [workoutId, i, s.distance_m || null, s.reps || null, s.time_or_pace || null, s.rest_between || null]
+        [workoutId, i, parseDistance(s.distance_m), parseInt(s.reps, 10) > 0 ? Math.min(parseInt(s.reps, 10), 500) : null, s.time_or_pace || null, s.rest_between || null]
       );
     }
   }
@@ -113,7 +124,8 @@ function num(v, min, max) {
 
 // POST /api/workouts/parse { text } — умный ввод: Fom раскладывает текст по полям формы
 router.post('/parse', requireTelegramAuth, async (req, res) => {
-  const text = (req.body.text || '').toString().trim().slice(0, 2000);
+  // файл с часов даёт длинный список кругов — ему можно чуть больше текста
+  const text = (req.body.text || '').toString().trim().slice(0, req.body.source === 'watch' ? 5000 : 2000);
   if (!text) return res.status(400).json({ error: 'Напиши, как прошла тренировка' });
 
   try {
