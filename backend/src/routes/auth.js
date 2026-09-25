@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query } from '../db.js';
+import { query, dbReady } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday } from '../streak.js';
 
@@ -78,6 +78,111 @@ router.post('/sport', requireTelegramAuth, async (req, res) => {
   );
   if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
   res.json({ ok: true, ...result.rows[0] });
+});
+
+// ===================================================================
+//  АНКЕТА СПОРТСМЕНА (личное — видит только сам человек и Fom, друзьям не показывается)
+// ===================================================================
+const LEVELS = ['beginner', 'amateur', 'ranked', 'kms', 'ms'];
+
+const athleteReady = (async () => {
+  await dbReady;
+  try {
+    await query(`CREATE TABLE IF NOT EXISTS athlete_profiles (
+      user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      sex TEXT,
+      birth_year INT,
+      height_cm INT,
+      weight_kg NUMERIC(5,1),
+      rest_hr INT,
+      experience_years INT,
+      level TEXT,
+      records TEXT,
+      goal TEXT,
+      injuries TEXT,
+      updated_at TIMESTAMP DEFAULT now()
+    )`);
+    await query(`DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'athlete_profiles' AND tableowner = current_user) THEN
+        ALTER TABLE athlete_profiles ENABLE ROW LEVEL SECURITY;
+      END IF; END $$`);
+  } catch (err) {
+    console.error('Athlete profile table failed:', err.message);
+  }
+})();
+
+// Проверка полей анкеты: пустое — можно, заполненное — только в разумных пределах.
+// Если что-то не так, возвращаем понятное сообщение, а не тихо стираем значение.
+function numIn(v, min, max, label, decimals = 0) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(String(v).replace(',', '.'));
+  if (!Number.isFinite(n) || n < min || n > max) throw new Error(`${label}: от ${min} до ${max}`);
+  const k = 10 ** decimals;
+  return Math.round(n * k) / k;
+}
+function textIn(v, max = 300) {
+  const s = (v ?? '').toString().trim();
+  return s ? s.slice(0, max) : null;
+}
+
+// GET /api/auth/athlete — своя анкета
+router.get('/athlete', requireTelegramAuth, async (req, res) => {
+  try {
+    await athleteReady;
+    const r = await query(
+      `SELECT p.* FROM athlete_profiles p JOIN users u ON u.id = p.user_id WHERE u.telegram_id = $1`,
+      [req.telegramUser.id]
+    );
+    const { user_id, updated_at, ...profile } = r.rows[0] || {};
+    res.json({ profile });
+  } catch (err) {
+    console.error('Athlete get failed:', err.message);
+    res.status(500).json({ error: 'Не удалось загрузить анкету' });
+  }
+});
+
+// POST /api/auth/athlete — сохранить анкету
+router.post('/athlete', requireTelegramAuth, async (req, res) => {
+  const b = req.body || {};
+  const year = new Date().getFullYear();
+  let profile;
+  try {
+    profile = {
+      sex: ['m', 'f'].includes(b.sex) ? b.sex : null,
+      birth_year: numIn(b.birth_year, 1930, year - 5, 'Год рождения'),
+      height_cm: numIn(b.height_cm, 100, 250, 'Рост, см'),
+      weight_kg: numIn(b.weight_kg, 25, 250, 'Вес, кг', 1),
+      rest_hr: numIn(b.rest_hr, 25, 120, 'Пульс покоя'),
+      experience_years: numIn(b.experience_years, 0, 80, 'Стаж, лет'),
+      level: LEVELS.includes(b.level) ? b.level : null,
+      records: textIn(b.records),
+      goal: textIn(b.goal),
+      injuries: textIn(b.injuries),
+    };
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  try {
+    await athleteReady;
+    const u = await query('SELECT id FROM users WHERE telegram_id = $1', [req.telegramUser.id]);
+    if (!u.rows[0]) return res.status(404).json({ error: 'User not found' });
+    await query(
+      `INSERT INTO athlete_profiles (user_id, sex, birth_year, height_cm, weight_kg, rest_hr, experience_years, level, records, goal, injuries, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
+       ON CONFLICT (user_id) DO UPDATE SET
+         sex = EXCLUDED.sex, birth_year = EXCLUDED.birth_year, height_cm = EXCLUDED.height_cm,
+         weight_kg = EXCLUDED.weight_kg, rest_hr = EXCLUDED.rest_hr, experience_years = EXCLUDED.experience_years,
+         level = EXCLUDED.level, records = EXCLUDED.records, goal = EXCLUDED.goal, injuries = EXCLUDED.injuries,
+         updated_at = now()`,
+      [u.rows[0].id, profile.sex, profile.birth_year, profile.height_cm, profile.weight_kg, profile.rest_hr,
+        profile.experience_years, profile.level, profile.records, profile.goal, profile.injuries]
+    );
+    res.json({ ok: true, profile });
+  } catch (err) {
+    console.error('Athlete save failed:', err.message);
+    res.status(500).json({ error: 'Не удалось сохранить анкету' });
+  }
 });
 
 export default router;
