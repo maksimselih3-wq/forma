@@ -199,4 +199,149 @@ router.post('/athlete', requireTelegramAuth, async (req, res) => {
   }
 });
 
+
+// ===================================================================
+//  КАЛЕНДАРЬ СТАРТОВ и УТРЕННЯЯ ОТМЕТКА (видит только сам человек и Fom)
+// ===================================================================
+const extrasReady = (async () => {
+  await dbReady;
+  try {
+    await query(`CREATE TABLE IF NOT EXISTS planned_starts (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      date DATE NOT NULL,
+      name TEXT NOT NULL,
+      discipline TEXT,
+      goal TEXT,
+      created_at TIMESTAMP DEFAULT now()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_planned_starts_user ON planned_starts(user_id, date)`);
+    await query(`CREATE TABLE IF NOT EXISTS morning_checks (
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      date DATE NOT NULL,
+      sleep_h NUMERIC(3,1),
+      rest_hr INT,
+      mood INT,
+      created_at TIMESTAMP DEFAULT now(),
+      PRIMARY KEY (user_id, date)
+    )`);
+    await query(`DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'planned_starts' AND tableowner = current_user) THEN
+        ALTER TABLE planned_starts ENABLE ROW LEVEL SECURITY;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'morning_checks' AND tableowner = current_user) THEN
+        ALTER TABLE morning_checks ENABLE ROW LEVEL SECURITY;
+      END IF; END $$`);
+  } catch (err) {
+    console.error('Extras tables failed:', err.message);
+  }
+})();
+
+async function internalId(telegramId) {
+  const u = await query('SELECT id FROM users WHERE telegram_id = $1', [telegramId]);
+  return u.rows[0]?.id || null;
+}
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// GET /api/auth/starts — будущие старты (и прошедшие за последнюю неделю)
+router.get('/starts', requireTelegramAuth, async (req, res) => {
+  try {
+    await extrasReady;
+    const uid = await internalId(req.telegramUser.id);
+    if (!uid) return res.status(404).json({ error: 'User not found' });
+    const r = await query(
+      `SELECT id, to_char(date, 'YYYY-MM-DD') AS date, name, discipline, goal FROM planned_starts
+       WHERE user_id = $1 AND date >= CURRENT_DATE - 7 ORDER BY date LIMIT 30`, [uid]);
+    res.json({ starts: r.rows });
+  } catch (err) {
+    console.error('Starts get failed:', err.message);
+    res.status(500).json({ error: 'Не удалось загрузить старты' });
+  }
+});
+
+// POST /api/auth/starts { date, name, discipline, goal } — добавить старт в планы
+router.post('/starts', requireTelegramAuth, async (req, res) => {
+  const b = req.body || {};
+  const date = String(b.date || '');
+  const name = textIn(b.name, 80);
+  if (!DATE_RE.test(date) || Number.isNaN(Date.parse(date))) return res.status(400).json({ error: 'Укажи дату старта' });
+  if (!name) return res.status(400).json({ error: 'Напиши, что за старт' });
+  try {
+    await extrasReady;
+    const uid = await internalId(req.telegramUser.id);
+    if (!uid) return res.status(404).json({ error: 'User not found' });
+    const cnt = await query('SELECT count(*)::int AS n FROM planned_starts WHERE user_id = $1 AND date >= CURRENT_DATE', [uid]);
+    if (cnt.rows[0].n >= 30) return res.status(400).json({ error: 'Слишком много стартов в планах' });
+    const r = await query(
+      `INSERT INTO planned_starts (user_id, date, name, discipline, goal) VALUES ($1, $2::date, $3, $4, $5)
+       RETURNING id, to_char(date, 'YYYY-MM-DD') AS date, name, discipline, goal`,
+      [uid, date, name, textIn(b.discipline, 40), textIn(b.goal, 40)]);
+    res.json({ start: r.rows[0] });
+  } catch (err) {
+    console.error('Start save failed:', err.message);
+    res.status(500).json({ error: 'Не удалось сохранить старт' });
+  }
+});
+
+// DELETE /api/auth/starts/:id
+router.delete('/starts/:id', requireTelegramAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!(id > 0)) return res.status(400).json({ error: 'Неверный старт' });
+  try {
+    await extrasReady;
+    const uid = await internalId(req.telegramUser.id);
+    await query('DELETE FROM planned_starts WHERE id = $1 AND user_id = $2', [id, uid]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Start delete failed:', err.message);
+    res.status(500).json({ error: 'Не удалось удалить старт' });
+  }
+});
+
+// GET /api/auth/morning — утренние отметки за 14 дней
+router.get('/morning', requireTelegramAuth, async (req, res) => {
+  try {
+    await extrasReady;
+    const uid = await internalId(req.telegramUser.id);
+    if (!uid) return res.status(404).json({ error: 'User not found' });
+    const r = await query(
+      `SELECT to_char(date, 'YYYY-MM-DD') AS date, sleep_h, rest_hr, mood FROM morning_checks
+       WHERE user_id = $1 AND date >= CURRENT_DATE - 14 ORDER BY date DESC`, [uid]);
+    res.json({ checks: r.rows.map((c) => ({ ...c, sleep_h: c.sleep_h == null ? null : Number(c.sleep_h) })) });
+  } catch (err) {
+    console.error('Morning get failed:', err.message);
+    res.status(500).json({ error: 'Не удалось загрузить отметки' });
+  }
+});
+
+// POST /api/auth/morning { date, sleep_h, rest_hr, mood } — отметка за сегодня (или вчера)
+router.post('/morning', requireTelegramAuth, async (req, res) => {
+  const b = req.body || {};
+  const today = getClientToday(req);
+  const date = DATE_RE.test(String(b.date || '')) ? String(b.date) : today;
+  if (date > today) return res.status(400).json({ error: 'Нельзя отметить будущий день' });
+  let sleep, hr, mood;
+  try {
+    sleep = numIn(b.sleep_h, 0, 16, 'Сон, часов', 1);
+    hr = numIn(b.rest_hr, 25, 130, 'Пульс покоя');
+    mood = numIn(b.mood, 1, 5, 'Самочувствие');
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (sleep == null && hr == null && mood == null) return res.status(400).json({ error: 'Заполни хотя бы одно поле' });
+  try {
+    await extrasReady;
+    const uid = await internalId(req.telegramUser.id);
+    if (!uid) return res.status(404).json({ error: 'User not found' });
+    await query(
+      `INSERT INTO morning_checks (user_id, date, sleep_h, rest_hr, mood) VALUES ($1, $2::date, $3, $4, $5)
+       ON CONFLICT (user_id, date) DO UPDATE SET sleep_h = EXCLUDED.sleep_h, rest_hr = EXCLUDED.rest_hr, mood = EXCLUDED.mood`,
+      [uid, date, sleep, hr, mood]);
+    res.json({ check: { date, sleep_h: sleep, rest_hr: hr, mood } });
+  } catch (err) {
+    console.error('Morning save failed:', err.message);
+    res.status(500).json({ error: 'Не удалось сохранить отметку' });
+  }
+});
+
 export default router;
