@@ -1,4 +1,5 @@
-import { query, dbReady } from './db.js';
+import { query, dbReady, WORKOUT_SELECT } from './db.js';
+import { getWeeklyDigest, athleteContext } from './ai.js';
 
 /**
  * Вечернее напоминание от бота.
@@ -40,6 +41,7 @@ export const remindersReady = (async () => {
   try {
     await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS remind_enabled BOOLEAN DEFAULT TRUE');
     await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS reminded_on DATE');
+    await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS digest_on DATE');
   } catch (err) {
     console.error('Reminder columns failed:', err.message);
   }
@@ -118,8 +120,53 @@ export async function sendReminders(send, { force = false } = {}) {
   return sent;
 }
 
+// ---------- Итоги недели от Fom: воскресенье, 19:00 по Москве ----------
+const DIGEST_HOUR = 19;
+function escHtml(t) {
+  return String(t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function mskDow() { return new Date(Date.now() + MSK_OFFSET_MS).getUTCDay(); }
+
+export async function sendWeeklyDigests(send, { force = false, onlyTelegramId = null } = {}) {
+  await remindersReady;
+  const t = mskNow();
+  if (!force && (mskDow() !== 0 || t.hour < DIGEST_HOUR || t.hour >= LAST_HOUR)) return 0;
+  const sunday = t.dateStr;
+  const monday = addDaysStr(sunday, -((mskDow() + 6) % 7));
+  const users = await query(
+    `SELECT u.id, u.telegram_id, u.first_name FROM users u
+     WHERE COALESCE(u.remind_enabled, TRUE)
+       ${onlyTelegramId ? 'AND u.telegram_id = $3' : 'AND (u.digest_on IS NULL OR u.digest_on < $2::date)'}
+       AND EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = u.id AND w.date BETWEEN $1::date AND $2::date)`,
+    onlyTelegramId ? [monday, sunday, onlyTelegramId] : [monday, sunday]
+  );
+  let sent = 0;
+  for (const u of users.rows) {
+    if (!onlyTelegramId) {
+      const claim = await query(
+        `UPDATE users SET digest_on = $1::date WHERE id = $2 AND (digest_on IS NULL OR digest_on < $1::date) RETURNING id`,
+        [sunday, u.id]);
+      if (!claim.rows.length) continue;
+    }
+    try {
+      const w = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date BETWEEN $2::date AND $3::date ORDER BY w.date, w.session`, [u.id, monday, sunday]);
+      const text = await getWeeklyDigest(w.rows, await athleteContext(u.id), u.first_name || '');
+      const res = await send(u.telegram_id, `📊 <b>Итоги недели от Fom</b>\n\n${escHtml(text)}`);
+      if (res?.ok) sent++;
+    } catch (err) {
+      console.error('Digest failed for user', u.id, err.message);
+    }
+    await new Promise((ok) => setTimeout(ok, 300));
+  }
+  if (sent) console.log(`Weekly digest: отправлено ${sent}`);
+  return sent;
+}
+
 export function startReminderScheduler(send) {
-  const check = () => sendReminders(send).catch((err) => console.error('Reminders failed:', err.message));
+  const check = () => {
+    sendReminders(send).catch((err) => console.error('Reminders failed:', err.message));
+    sendWeeklyDigests(send).catch((err) => console.error('Digest failed:', err.message));
+  };
   setTimeout(check, 20000);
   setInterval(check, 5 * 60 * 1000); // раз в 5 минут проверяем, не пора ли
 }
