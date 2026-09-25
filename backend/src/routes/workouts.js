@@ -30,6 +30,8 @@ const schemaReady = (async () => {
         END LOOP;
       END $$`);
     await query(`CREATE UNIQUE INDEX IF NOT EXISTS workouts_user_date_session ON workouts(user_id, date, session)`);
+    // старт (соревнование): название, дисциплина, результат, место — хранится прямо в записи
+    await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS competition JSONB`);
     console.log('Workouts schema OK (вторая тренировка)');
   } catch (err) {
     console.error('Workouts migration failed:', err.message);
@@ -91,6 +93,18 @@ async function saveChildren(client, workoutId, sets, exercises) {
   }
 }
 
+// Старт: { name, discipline, result, place } — или null, если это обычная тренировка
+function cleanCompetition(c) {
+  if (!c || typeof c !== 'object') return null;
+  const out = {
+    name: txt(c.name, 80),
+    discipline: txt(c.discipline, 40),
+    result: txt(c.result, 20),
+    place: parseInt(c.place, 10) >= 1 && parseInt(c.place, 10) <= 9999 ? parseInt(c.place, 10) : null,
+  };
+  return out.discipline || out.result || out.name ? out : null;
+}
+
 // Число в допустимых пределах, иначе пусто
 function num(v, min, max) {
   const n = Number(v);
@@ -149,6 +163,8 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   const hrMin = isTraining ? hr(req.body.hr_min) : null;
 
   const session = parseInt(req.body.session, 10) === 2 ? 2 : 1;
+  const competition = isTraining ? cleanCompetition(req.body.competition) : null;
+  const competitionJson = competition ? JSON.stringify(competition) : null; // в базу — строкой JSON
 
   if (!isValidDate(date) || !['training', 'rest'].includes(type)) {
     return res.status(400).json({ error: 'date (ГГГГ-ММ-ДД) и type (training|rest) обязательны' });
@@ -177,9 +193,9 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       // запись уже есть — обновляем
       const upd = await client.query(
         `UPDATE workouts SET type=$1, warmup=$2, cooldown=$3, feeling=$4, rpe=$5, notes=$6, visibility=$7,
-           hr_avg=$8, hr_max=$9, hr_min=$10
-         WHERE id=$11 RETURNING *`,
-        [type, ...values, found.rows[0].id]
+           hr_avg=$8, hr_max=$9, hr_min=$10, competition=$11
+         WHERE id=$12 RETURNING *`,
+        [type, ...values, competitionJson, found.rows[0].id]
       );
       workout = upd.rows[0];
     } else {
@@ -198,9 +214,9 @@ router.post('/', requireTelegramAuth, async (req, res) => {
         }
       }
       const ins = await client.query(
-        `INSERT INTO workouts (user_id, date, session, type, warmup, cooldown, feeling, rpe, notes, visibility, hr_avg, hr_max, hr_min)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-        [user.id, date, session, type, ...values]
+        `INSERT INTO workouts (user_id, date, session, type, warmup, cooldown, feeling, rpe, notes, visibility, hr_avg, hr_max, hr_min, competition)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+        [user.id, date, session, type, ...values, competitionJson]
       );
       workout = ins.rows[0];
     }
@@ -224,7 +240,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       );
       try {
         aiFeedback = await getWorkoutFeedback(
-          { date, session, type, warmup, cooldown, sets, exercises, rpe, feeling, notes, hr_avg: hrAvg, hr_max: hrMax, hr_min: hrMin, isBackdated: date !== today },
+          { date, session, type, warmup, cooldown, sets, exercises, rpe, feeling, notes, hr_avg: hrAvg, hr_max: hrMax, hr_min: hrMin, competition, isBackdated: date !== today },
           recentRes.rows,
           await athleteContext(user.id)
         );
@@ -279,16 +295,19 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
   const hrAvg = isTraining ? hr(req.body.hr_avg) : null;
   const hrMax = isTraining ? hr(req.body.hr_max) : null;
   const hrMin = isTraining ? hr(req.body.hr_min) : null;
+  const competition = isTraining ? cleanCompetition(req.body.competition) : null;
+  const competitionJson = competition ? JSON.stringify(competition) : null; // в базу — строкой JSON
 
+  await schemaReady;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     const updated = await client.query(
       `UPDATE workouts SET type=$1, warmup=$2, cooldown=$3, feeling=$4, rpe=$5, notes=$6, visibility=$7,
-         hr_avg=$8, hr_max=$9, hr_min=$10
-       WHERE id=$11 AND user_id=$12 RETURNING *`,
-      [type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, visibility || 'private', hrAvg, hrMax, hrMin, req.params.id, user.id]
+         hr_avg=$8, hr_max=$9, hr_min=$10, competition=$11
+       WHERE id=$12 AND user_id=$13 RETURNING *`,
+      [type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, visibility || 'private', hrAvg, hrMax, hrMin, competitionJson, req.params.id, user.id]
     );
 
     if (updated.rows.length === 0) {
