@@ -3,6 +3,7 @@ import { query, dbReady } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday } from '../streak.js';
 import { remindersReady, setReminderEnabled } from '../reminders.js';
+import { rememberReferral, settleReferral } from '../social.js';
 
 const router = Router();
 
@@ -29,6 +30,24 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
       [user.id, tgUser.username || null, tgUser.first_name || null, tgUser.last_name || null, tgUser.photo_url || null]
     );
     user = updated.rows[0] || user;
+  }
+
+  // Пришёл по ссылке-приглашению? Сразу дружим с пригласившим и радуем его сообщением.
+  try {
+    const sp = String(req.body?.start_param || '');
+    if (/^r_/.test(sp)) await rememberReferral(tgUser.id, sp).catch(() => {});
+    if (!existing.rows[0] || /^r_/.test(sp)) {
+      const inviter = await settleReferral(user);
+      if (inviter && process.env.BOT_TOKEN) {
+        const name = [user.first_name, user.last_name].filter(Boolean).join(' ') || 'Твой друг';
+        fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: inviter.telegram_id, text: `🎉 ${name} пришёл в Forma по твоему приглашению — вы теперь друзья! Когда он запишет 3 тренировки, тебе +1 билет в недельный розыгрыш 🎟` }),
+        }).catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.error('Referral failed:', err.message);
   }
 
   // При каждом открытии пересчитываем серию: если человек пропустил день,
