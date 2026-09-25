@@ -1,10 +1,40 @@
 import { Router } from 'express';
-import { query, pool, WORKOUT_SELECT } from '../db.js';
+import { query, pool, WORKOUT_SELECT, dbReady } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday, isValidDate, daysBetween } from '../streak.js';
-import { getWorkoutFeedback, parseWorkoutText } from '../ai.js';
+import { getWorkoutFeedback, parseWorkoutText, athleteContext } from '../ai.js';
 
 const router = Router();
+
+// Новые записи можно добавлять только за сегодня и вчера — так серия остаётся честной.
+// (Уже существующие записи за любые дни можно спокойно редактировать.)
+const MAX_BACKFILL_DAYS = 1;
+
+// Вторая тренировка за день: у записи появляется номер (session = 1 или 2).
+// Раньше в базе было правило «одна запись в день» — меняем его на «одна запись на номер в день».
+const schemaReady = (async () => {
+  await dbReady;
+  try {
+    await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS session INT NOT NULL DEFAULT 1`);
+    await query(`DO $$
+      DECLARE c text;
+      BEGIN
+        FOR c IN
+          SELECT con.conname FROM pg_constraint con
+          JOIN pg_class t ON t.oid = con.conrelid
+          WHERE t.relname = 'workouts' AND con.contype = 'u'
+            AND (SELECT array_agg(a.attname::text ORDER BY a.attname) FROM pg_attribute a
+                 WHERE a.attrelid = t.oid AND a.attnum = ANY(con.conkey)) = ARRAY['date','user_id']
+        LOOP
+          EXECUTE format('ALTER TABLE workouts DROP CONSTRAINT %I', c);
+        END LOOP;
+      END $$`);
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS workouts_user_date_session ON workouts(user_id, date, session)`);
+    console.log('Workouts schema OK (вторая тренировка)');
+  } catch (err) {
+    console.error('Workouts migration failed:', err.message);
+  }
+})();
 
 async function getInternalUser(telegramId) {
   const res = await query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
@@ -103,8 +133,10 @@ router.post('/parse', requireTelegramAuth, async (req, res) => {
 });
 
 // POST /api/workouts — создать/обновить запись за дату (тренировка или отдых).
-// Дата может быть любой прошедшей (календарь) или сегодняшней, но не будущей.
+// session: 1 — основная запись дня, 2 — вторая тренировка.
+// Новую запись можно создать только за сегодня или вчера; существующую — обновить за любой день.
 router.post('/', requireTelegramAuth, async (req, res) => {
+  await schemaReady;
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -116,8 +148,13 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   const hrMax = isTraining ? hr(req.body.hr_max) : null;
   const hrMin = isTraining ? hr(req.body.hr_min) : null;
 
+  const session = parseInt(req.body.session, 10) === 2 ? 2 : 1;
+
   if (!isValidDate(date) || !['training', 'rest'].includes(type)) {
     return res.status(400).json({ error: 'date (ГГГГ-ММ-ДД) и type (training|rest) обязательны' });
+  }
+  if (session === 2 && !isTraining) {
+    return res.status(400).json({ error: 'Вторая запись за день — только тренировка' });
   }
 
   const today = getClientToday(req);
@@ -129,18 +166,44 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const upserted = await client.query(
-      `INSERT INTO workouts (user_id, date, type, warmup, cooldown, feeling, rpe, notes, visibility, hr_avg, hr_max, hr_min)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       ON CONFLICT (user_id, date) DO UPDATE SET
-         type = EXCLUDED.type, warmup = EXCLUDED.warmup, cooldown = EXCLUDED.cooldown,
-         feeling = EXCLUDED.feeling, rpe = EXCLUDED.rpe, notes = EXCLUDED.notes,
-         visibility = EXCLUDED.visibility,
-         hr_avg = EXCLUDED.hr_avg, hr_max = EXCLUDED.hr_max, hr_min = EXCLUDED.hr_min
-       RETURNING *`,
-      [user.id, date, type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, visibility || 'private', hrAvg, hrMax, hrMin]
+    const values = [warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, visibility || 'private', hrAvg, hrMax, hrMin];
+    const found = await client.query(
+      'SELECT id FROM workouts WHERE user_id = $1 AND date = $2 AND session = $3',
+      [user.id, date, session]
     );
-    const workout = upserted.rows[0];
+
+    let workout;
+    if (found.rows.length) {
+      // запись уже есть — обновляем
+      const upd = await client.query(
+        `UPDATE workouts SET type=$1, warmup=$2, cooldown=$3, feeling=$4, rpe=$5, notes=$6, visibility=$7,
+           hr_avg=$8, hr_max=$9, hr_min=$10
+         WHERE id=$11 RETURNING *`,
+        [type, ...values, found.rows[0].id]
+      );
+      workout = upd.rows[0];
+    } else {
+      // новая запись — только за сегодня или вчера
+      if (daysBetween(date, today) > MAX_BACKFILL_DAYS) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Новые записи можно добавлять только за сегодня и вчера 🙂' });
+      }
+      if (session === 2) {
+        const first = await client.query(
+          `SELECT type FROM workouts WHERE user_id = $1 AND date = $2 AND session = 1`, [user.id, date]
+        );
+        if (!first.rows.length || first.rows[0].type !== 'training') {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Сначала запиши первую тренировку за этот день' });
+        }
+      }
+      const ins = await client.query(
+        `INSERT INTO workouts (user_id, date, session, type, warmup, cooldown, feeling, rpe, notes, visibility, hr_avg, hr_max, hr_min)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+        [user.id, date, session, type, ...values]
+      );
+      workout = ins.rows[0];
+    }
 
     await saveChildren(client, workout.id, sets, exercises);
 
@@ -153,14 +216,17 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     let aiFeedback = null;
     if (isTraining) {
       // 7 предыдущих записей целиком — чтобы Fom видел реальную картину
+      // 7 предыдущих записей + первая тренировка этого же дня, если сейчас вторая
       const recentRes = await query(
-        `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date < $2 ORDER BY w.date DESC LIMIT 7`,
-        [user.id, date]
+        `${WORKOUT_SELECT} WHERE w.user_id = $1 AND (w.date < $2 OR (w.date = $2 AND w.session < $3))
+         ORDER BY w.date DESC, w.session DESC LIMIT 7`,
+        [user.id, date, session]
       );
       try {
         aiFeedback = await getWorkoutFeedback(
-          { date, type, warmup, cooldown, sets, exercises, rpe, feeling, notes, hr_avg: hrAvg, hr_max: hrMax, hr_min: hrMin, isBackdated: date !== today },
-          recentRes.rows
+          { date, session, type, warmup, cooldown, sets, exercises, rpe, feeling, notes, hr_avg: hrAvg, hr_max: hrMax, hr_min: hrMin, isBackdated: date !== today },
+          recentRes.rows,
+          await athleteContext(user.id)
         );
         await query('UPDATE workouts SET ai_feedback = $1 WHERE id = $2', [aiFeedback, workout.id]);
       } catch (err) {
@@ -184,7 +250,8 @@ router.get('/', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const result = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 ORDER BY w.date DESC`, [user.id]);
+  await schemaReady;
+  const result = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 ORDER BY w.date DESC, w.session`, [user.id]);
 
   res.json({ workouts: result.rows, streak: { current: user.current_streak, longest: user.longest_streak } });
 });
