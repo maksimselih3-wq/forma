@@ -255,6 +255,56 @@ function formatExercise(e) {
   return line.trim();
 }
 
+// ---------- Беговой объём: считаем программой, а не «в уме» у модели ----------
+// Ровно так же, как в приложении (графики «Разбора», календарь, цели недели):
+// отрезки (метры × повторы) + все «N км» в разминке и заминке.
+export function volumeKm(w) {
+  if (!w || w.type !== 'training') return 0;
+  let m = 0;
+  (Array.isArray(w.sets) ? w.sets : []).forEach((s) => { m += (Number(s.distance_m) || 0) * (Number(s.reps) || 1); });
+  const text = [w.warmup, w.cooldown].filter(Boolean).join(' ');
+  for (const x of text.matchAll(/(\d+(?:[.,]\d+)?)\s*км/gi)) {
+    const km = Number(x[1].replace(',', '.'));
+    if (km > 0 && km < 100) m += km * 1000;
+  }
+  return m / 1000;
+}
+const kmFmt = (km) => String(Math.round(km * 10) / 10).replace('.', ',');
+function shiftDate(str, n) {
+  const d = new Date(str + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function mondayOfStr(str) {
+  const dow = new Date(str + 'T00:00:00Z').getUTCDay();
+  return shiftDate(str, -((dow + 6) % 7));
+}
+function periodLine(label, workouts, from, to) {
+  const list = workouts.filter((w) => { const d = String(w.date).slice(0, 10); return d >= from && d <= to; });
+  const tr = list.filter((w) => w.type === 'training');
+  const km = tr.reduce((a, w) => a + volumeKm(w), 0);
+  const rest = list.filter((w) => w.type === 'rest').length;
+  return `- ${label} (${from} — ${to}): беговой объём ${kmFmt(km)} км, тренировок ${tr.length}, дней отдыха ${rest}`;
+}
+/**
+ * Готовые итоги по неделям — модель берёт их, а не складывает десятки чисел сама (так она ошибалась).
+ * weeksBack — сколько прошлых календарных недель показать.
+ */
+export function volumeFacts(workouts, today, { weeksBack = 3, month = true, last7 = true } = {}) {
+  if (!today) return '';
+  const lines = [];
+  const mon = mondayOfStr(today);
+  lines.push(periodLine('текущая неделя, с понедельника по сегодня', workouts, mon, today));
+  for (let i = 1; i <= weeksBack; i++) {
+    const from = shiftDate(mon, -7 * i);
+    lines.push(periodLine(i === 1 ? 'прошлая неделя' : `${i} недели назад`, workouts, from, shiftDate(from, 6)));
+  }
+  if (last7) lines.push(periodLine('последние 7 дней', workouts, shiftDate(today, -6), today));
+  if (month) lines.push(periodLine('текущий месяц, с 1-го числа', workouts, today.slice(0, 8) + '01', today));
+  return `ИТОГИ ОБЪЁМА — посчитаны программой точно так же, как в приложении (графики и календарь). Когда говоришь об объёме за неделю или месяц, бери цифры отсюда и НЕ пересчитывай их сам. Минуты «по времени» и ОФП сюда не входят — о них можно сказать отдельно.
+${lines.join('\n')}`;
+}
+
 /**
  * Полное описание одной записи для ИИ: дата, день недели, разминка, повторы, заминка, RPE, самочувствие, заметка.
  * Используется и в отзыве после тренировки, и в разборе нагрузки, и в чате.
@@ -283,6 +333,8 @@ export function describeWorkout(w) {
   if (w.hr_max) pulse.push(`максимальный ${w.hr_max}`);
   if (w.hr_min) pulse.push(`минимальный в паузах ${w.hr_min}`);
   if (pulse.length) parts.push(`пульс (уд/мин): ${pulse.join(', ')}`);
+  const km = volumeKm(w);
+  if (km > 0) parts.push(`беговой объём записи ${kmFmt(km)} км`);
   parts.push(`RPE ${w.rpe ?? '-'}/10, самочувствие ${w.feeling ?? '-'}/10`);
   if (w.notes) parts.push(`заметка: ${w.notes}`);
   const paces = textPaces([w.warmup, w.cooldown, w.notes].filter(Boolean).join('\n'));
@@ -328,6 +380,8 @@ export async function getPeriodInsight(workouts, period, athlete = '') {
 Вот записи с начала ${period === 'month' ? 'текущего месяца' : 'текущей недели (с понедельника)'} по сегодня:
 ${summary || 'записей нет'}
 
+Беговой объём за этот период (посчитан программой точно так же, как в приложении — бери это число и НЕ пересчитывай): ${kmFmt(workouts.reduce((a, w) => a + volumeKm(w), 0))} км. Минуты «по времени» и ОФП сюда не входят.
+
 ${VOLUME_RULE}
 
 ${PULSE_RULE}
@@ -358,12 +412,12 @@ ${COMP_RULE}
  * history — предыдущие сообщения диалога (без текущего вопроса).
  * today — сегодняшняя дата пользователя 'ГГГГ-ММ-ДД'.
  */
-export async function getChatReply(contextSummary, history, message, today, athlete = '') {
+export async function getChatReply(contextSummary, history, message, today, athlete = '', workouts = []) {
   const systemPrompt = `${FOM_INTRO}${athleteBlock(athlete)}
 Ты заботливый помощник спортсмена.
 Ты отвечаешь на вопросы, опираясь ТОЛЬКО на реальные данные его тренировок, которые даны ниже. Если чего-то в данных нет — честно скажи, что не можешь это посчитать, не выдумывай цифры.
 
-Сегодня: ${today} (${weekday(today)}). Когда спрашивают «за неделю», считай текущую календарную неделю с понедельника по сегодня; «за месяц» — с 1-го числа текущего месяца.
+Сегодня: ${today} (${weekday(today)}). Когда спрашивают «за неделю», имей в виду текущую календарную неделю с понедельника по сегодня; но если неделя только началась (сегодня понедельник или вторник) — скорее всего, человек спрашивает про прошлую полную неделю: назови её объём и коротко уточни, что текущая только началась. «За месяц» — с 1-го числа текущего месяца. Всегда называй, за какие даты цифра.
 
 ${VOLUME_RULE}
 
@@ -372,6 +426,8 @@ ${PULSE_RULE}
 ${PACE_RULE}
 
 ${COMP_RULE}
+
+${volumeFacts(workouts, today)}
 
 Записи тренировок за последние 30 дней:
 ${contextSummary || 'записей нет'}
@@ -496,6 +552,8 @@ export async function getWeeklyDigest(workouts, athlete = '', name = '') {
 
 Записи за неделю (пн–вс):
 ${summary}
+
+Беговой объём за неделю (посчитан программой, как в приложении — бери это число, не пересчитывай): ${kmFmt(workouts.reduce((a, w) => a + volumeKm(w), 0))} км.
 
 ${VOLUME_RULE}
 
