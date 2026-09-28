@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth, validateInitData } from '../telegramAuth.js';
+import { volumeKm } from '../ai.js';
 import { socialReady, isCoachOf, shareGroup, newGroupCode, refCode, referralStats, REF_MIN_WORKOUTS, REF_MAX_BONUS } from '../social.js';
 
 const router = Router();
@@ -516,13 +517,18 @@ router.get('/groups/:id', async (req, res) => {
   const members = await query(
     `SELECT ${PUBLIC_USER}, m.role,
        (SELECT count(*)::int FROM workouts w WHERE w.user_id = u.id AND w.type = 'training' AND w.date >= $2::date) AS week_trainings,
-       (SELECT COALESCE(round(sum(COALESCE(s.distance_m, 0) * COALESCE(s.reps, 1)) / 1000.0, 1), 0)::float
-          FROM workout_sets s JOIN workouts w ON w.id = s.workout_id
-          WHERE w.user_id = u.id AND w.date >= $2::date) AS week_km,
        (SELECT to_char(max(w.date), 'YYYY-MM-DD') FROM workouts w WHERE w.user_id = u.id) AS last_entry
      FROM group_members m JOIN users u ON u.id = m.user_id
      WHERE m.group_id = $1
-     ORDER BY week_trainings DESC, week_km DESC, u.current_streak DESC`, [gid, monday]);
+     ORDER BY week_trainings DESC, u.current_streak DESC`, [gid, monday]);
+  // километры недели — по той же формуле, что в приложении и у Fom (отрезки + км/м в разминке и заминке + старты)
+  const weekW = await query(
+    `${WORKOUT_SELECT} WHERE w.user_id IN (SELECT user_id FROM group_members WHERE group_id = $1) AND w.date >= $2::date`,
+    [gid, monday]);
+  const kmBy = {};
+  for (const w of weekW.rows) kmBy[w.user_id] = (kmBy[w.user_id] || 0) + volumeKm(w);
+  members.rows.forEach((m) => { m.week_km = Math.round((kmBy[m.id] || 0) * 10) / 10; });
+  members.rows.sort((a, b) => (b.week_trainings - a.week_trainings) || (b.week_km - a.week_km) || ((b.current_streak || 0) - (a.current_streak || 0)));
   const isCoach = g.coach_mode && g.owner_id === req.me.id;
   res.json({
     group: {
