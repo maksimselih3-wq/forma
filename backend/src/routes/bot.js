@@ -23,6 +23,9 @@ const RAW_SECRET = (process.env.BOT_WEBHOOK_SECRET || '').trim();
 const WEBHOOK_SECRET = RAW_SECRET ? crypto.createHash('sha256').update(RAW_SECRET).digest('hex') : '';
 const APP_URL = process.env.APP_URL || 'https://maksimselih3-wq.github.io/forma-2/';
 const SERVER_URL = process.env.SERVER_URL || 'https://forma-production-9c7a.up.railway.app';
+// Адрес для ссылок, которые открывает человек (картинка для истории, файл выгрузки).
+// Если приложение работает через свой домен в России — ссылки ведут туда, иначе на Railway.
+const PUBLIC_URL = (process.env.PUBLIC_URL || SERVER_URL).replace(/\/+$/, '');
 // Картинка приветствия лежит рядом с приложением на GitHub Pages
 const WELCOME_IMAGE = new URL('bot/welcome.png', APP_URL).toString();
 
@@ -57,7 +60,7 @@ async function configureBot() {
   // Текст в пустом чате до нажатия «Старт» (до 512 символов)
   await tg('setMyDescription', {
     description:
-      'Forma — дневник тренировок с ИИ-помощником Fom.\n\n' +
+      'Forma — дневник тренировок с помощником Fom.\n\n' +
       '📝 Записывай тренировку за минуту — можно просто своими словами\n' +
       '❤️ Пульс, нагрузка, самочувствие, силовая и ОФП\n' +
       '🤖 Fom считает объём и замечает перегруз\n' +
@@ -67,7 +70,7 @@ async function configureBot() {
 
   // Короткое описание в профиле бота (до 120 символов)
   await tg('setMyShortDescription', {
-    short_description: 'Дневник тренировок с ИИ-помощником Fom 🔥 Серии, календарь, друзья.',
+    short_description: 'Дневник тренировок с помощником Fom 🔥 Серии, календарь, друзья.',
   });
 
   // Команды в меню «/»
@@ -366,7 +369,7 @@ router.post('/story', requireTelegramAuth, express.raw({ type: 'image/jpeg', lim
   cleanStories();
   const id = crypto.randomBytes(12).toString('hex');
   stories.set(id, { buf, at: Date.now() });
-  res.json({ url: `${SERVER_URL}/api/bot/story/${id}.jpg` });
+  res.json({ url: `${PUBLIC_URL}/api/bot/story/${id}.jpg` });
 });
 
 // POST /api/bot/export — выгрузка дневника (CSV-файл), отдаём по короткой ссылке, чтобы Telegram скачал
@@ -376,7 +379,7 @@ router.post('/export', requireTelegramAuth, express.raw({ type: 'text/csv', limi
   cleanStories();
   const id = crypto.randomBytes(12).toString('hex');
   stories.set(id, { buf, at: Date.now(), type: 'text/csv; charset=utf-8' });
-  res.json({ url: `${SERVER_URL}/api/bot/story/${id}.csv` });
+  res.json({ url: `${PUBLIC_URL}/api/bot/story/${id}.csv` });
 });
 
 // GET /api/bot/story/:id.jpg — сама картинка (её забирает Telegram)
