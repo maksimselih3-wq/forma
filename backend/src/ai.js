@@ -117,8 +117,13 @@ export async function athleteContext(userId) {
     // лучшие результаты на стартах, которые спортсмен записал в дневник
     try {
       const comps = await query(`SELECT id, date, competition FROM workouts WHERE user_id = $1 AND competition IS NOT NULL`, [userId]);
-      const best = bestResults(comps.rows);
-      if (best.length) lines.push(`Лучшие результаты на стартах (по дневнику): ${best.map((b) => `${b.discipline} — ${b.result} (${b.date})`).join('; ')}`);
+      let manual = [];
+      try {
+        const m = await query(`SELECT id, discipline, result, note, to_char(date, 'YYYY-MM-DD') AS date FROM manual_records WHERE user_id = $1`, [userId]);
+        manual = m.rows.map((x) => ({ id: `m${x.id}`, date: x.date || '1900-01-01', competition: { discipline: x.discipline, result: x.result, name: x.note } }));
+      } catch (e) { /* таблицы ещё нет */ }
+      const best = bestResults([...comps.rows, ...manual]);
+      if (best.length) lines.push(`Личные рекорды (со стартов в дневнике и внесённые вручную): ${best.map((b) => `${b.discipline} — ${b.result}${b.date && b.date !== '1900-01-01' ? ` (${b.date})` : ''}`).join('; ')}`);
     } catch (e) { /* колонки ещё нет — не страшно */ }
     // ближайшие старты из календаря
     try {
