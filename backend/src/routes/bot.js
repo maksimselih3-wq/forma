@@ -290,6 +290,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // Удалить пробежку по жалобе — только для админа: /delrun 12
+  const delRun = /^\/delrun\s+(\d+)$/.exec(text);
+  if (delRun) {
+    if (!(await isAdmin(msg.from.id))) return;
+    const ok = await adminDeleteRun(parseInt(delRun[1], 10));
+    await sendText(msg.chat.id, ok ? `Пробежка #${delRun[1]} удалена.` : 'Такой пробежки нет.');
+    return;
+  }
+
   // Тестовый розыгрыш — только для админа: /draw_week или /draw_month
   if (text === '/draw_week' || text === '/draw_month') {
     if (!(await isAdmin(msg.from.id))) return;
