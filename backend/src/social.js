@@ -37,6 +37,8 @@ export const socialReady = (async () => {
       created_at TIMESTAMP DEFAULT now()
     )`);
     await query(`CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON referrals(inviter_id)`);
+    // видят ли друзья блок «Личные рекорды» в профиле (по умолчанию — да, выключается в «Приватности»)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS show_records BOOLEAN DEFAULT TRUE`);
     await query(`DO $$
       DECLARE t text;
       BEGIN
