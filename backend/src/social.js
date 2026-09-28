@@ -37,12 +37,30 @@ export const socialReady = (async () => {
       created_at TIMESTAMP DEFAULT now()
     )`);
     await query(`CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON referrals(inviter_id)`);
+    // «Выбрать друзей»: кому открыта конкретная тренировка (visibility = 'custom')
+    await query(`CREATE TABLE IF NOT EXISTS workout_visible_to (
+      workout_id INT REFERENCES workouts(id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      PRIMARY KEY (workout_id, user_id)
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_visible_to_user ON workout_visible_to(user_id)`);
+    // Личные рекорды, внесённые вручную (без записи старта в дневнике)
+    await query(`CREATE TABLE IF NOT EXISTS manual_records (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      discipline TEXT NOT NULL,
+      result TEXT NOT NULL,
+      date DATE,
+      note TEXT,
+      created_at TIMESTAMP DEFAULT now()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_manual_records_user ON manual_records(user_id)`);
     // видят ли друзья блок «Личные рекорды» в профиле (по умолчанию — да, выключается в «Приватности»)
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS show_records BOOLEAN DEFAULT TRUE`);
     await query(`DO $$
       DECLARE t text;
       BEGIN
-        FOREACH t IN ARRAY ARRAY['groups', 'group_members', 'referrals'] LOOP
+        FOREACH t IN ARRAY ARRAY['groups', 'group_members', 'referrals', 'workout_visible_to', 'manual_records'] LOOP
           IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = t AND tableowner = current_user) THEN
             EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
           END IF;
@@ -50,6 +68,15 @@ export const socialReady = (async () => {
       END $$`);
   } catch (err) {
     console.error('Social tables failed:', err.message);
+  }
+  // Видимость записи теперь бывает ещё и 'custom' (выбранные друзья) — расширяем проверку в базе
+  try {
+    await query(`DO $$ BEGIN
+      ALTER TABLE workouts DROP CONSTRAINT IF EXISTS workouts_visibility_check;
+      ALTER TABLE workouts ADD CONSTRAINT workouts_visibility_check CHECK (visibility IN ('private', 'public', 'custom'));
+    END $$`);
+  } catch (err) {
+    console.error('Visibility check update failed:', err.message);
   }
 })();
 
@@ -163,4 +190,46 @@ export async function referralBonuses() {
     [REF_MIN_WORKOUTS]
   );
   return Object.fromEntries(r.rows.map((x) => [x.id, Math.min(REF_MAX_BONUS, x.n)]));
+}
+
+// ---------- Кому видна тренировка ----------
+// SQL-условие «человек с id из параметра meParam может видеть эту чужую тренировку w»:
+// открыта всем друзьям, или открыта именно ему через «Выбрать друзей».
+export function visibleToSql(meParam) {
+  return `(w.visibility = 'public' OR (w.visibility = 'custom' AND EXISTS (
+    SELECT 1 FROM workout_visible_to vt WHERE vt.workout_id = w.id AND vt.user_id = ${meParam})))`;
+}
+export async function canSeeCustom(meId, workoutId) {
+  await socialReady;
+  const r = await query('SELECT 1 FROM workout_visible_to WHERE workout_id = $1 AND user_id = $2', [workoutId, meId]);
+  return r.rows.length > 0;
+}
+
+// ---------- Рекорды, внесённые вручную ----------
+// Возвращаем их в том же виде, что и записи-старты, — чтобы считать лучший результат одной функцией.
+// Рекорд без даты считаем «давним» (1900-01-01): он был до всех стартов в дневнике.
+export async function manualRecordsAsStarts(userIds) {
+  if (!userIds.length) return {};
+  await socialReady;
+  const r = await query(
+    `SELECT id, user_id, discipline, result, note, to_char(date, 'YYYY-MM-DD') AS date FROM manual_records
+     WHERE user_id = ANY($1::int[])`, [userIds]);
+  const by = {};
+  r.rows.forEach((x) => {
+    (by[x.user_id] ||= []).push({
+      id: `m${x.id}`, manual_id: x.id, date: x.date || '1900-01-01', manual: true,
+      competition: { discipline: x.discipline, result: x.result, name: x.note || null },
+    });
+  });
+  return by;
+}
+
+// ---------- Первопроходцы: первые 10 пользователей Forma ----------
+export const PIONEERS = 10;
+// Номер человека среди первых десяти (1–10) или null
+export async function pioneerNo(userId) {
+  if (!userId) return null;
+  const r = await query('SELECT count(*)::int AS n FROM users WHERE id <= $1', [userId]);
+  const n = r.rows[0]?.n || 0;
+  return n > 0 && n <= PIONEERS ? n : null;
 }
