@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth, validateInitData } from '../telegramAuth.js';
-import { volumeKm } from '../ai.js';
+import { volumeKm, bestResults, parseResult, disciplineKey, higherIsBetter } from '../ai.js';
 import { socialReady, isCoachOf, shareGroup, newGroupCode, refCode, referralStats, REF_MIN_WORKOUTS, REF_MAX_BONUS } from '../social.js';
 
 const router = Router();
@@ -95,8 +95,35 @@ function notify(telegramId, text) {
  * К списку тренировок добавляем: автора, реакции (сколько каких + моя) и число комментариев.
  * Отзыв Fom не показываем никому, кроме хозяина — это личное.
  */
+// ---------- Личные рекорды ----------
+const asComp = (c) => { if (typeof c === 'string') { try { return JSON.parse(c); } catch { return null; } } return c; };
+// Все старты этих людей: { userId: [{ id, date, competition }] }
+async function startsByUser(userIds) {
+  if (!userIds.length) return {};
+  const r = await query(
+    `SELECT id, user_id, to_char(date, 'YYYY-MM-DD') AS date, competition FROM workouts
+     WHERE user_id = ANY($1::int[]) AND competition IS NOT NULL`, [userIds]);
+  const by = {};
+  r.rows.forEach((x) => { (by[x.user_id] ||= []).push({ ...x, competition: asComp(x.competition) }); });
+  return by;
+}
+// Старт — личный рекорд, если он лучше всех прошлых стартов человека в этой дисциплине
+function isPersonalBest(w, starts) {
+  const c = asComp(w.competition);
+  if (!c?.discipline || !c?.result) return false;
+  const v = parseResult(c.result, c.discipline);
+  if (v == null) return false;
+  const d = String(w.date).slice(0, 10);
+  const key = disciplineKey(c.discipline);
+  const prev = bestResults((starts || []).filter((x) => x.id !== w.id && x.date <= d))
+    .find((b) => disciplineKey(b.discipline) === key);
+  return !prev || (higherIsBetter(c.discipline) ? v > prev.value : v < prev.value);
+}
+
 async function withSocial(workouts, meId) {
   if (workouts.length === 0) return [];
+  const compUsers = [...new Set(workouts.filter((w) => w.competition).map((w) => w.user_id))];
+  const starts = await startsByUser(compUsers);
   const ids = workouts.map((w) => w.id);
   const userIds = [...new Set(workouts.map((w) => w.user_id))];
 
@@ -124,6 +151,7 @@ async function withSocial(workouts, meId) {
       ...rest,
       ai_feedback: w.user_id === meId ? ai_feedback : null,
       author: usersById[w.user_id] || null,
+      is_pb: w.competition ? isPersonalBest(w, starts[w.user_id]) : false,
       reactions: counts,
       my_reaction: rs.find((r) => r.mine)?.emoji || null,
       comments_count: comments.rows.find((c) => c.workout_id === w.id)?.n || 0,
@@ -305,12 +333,23 @@ router.get('/activity', async (req, res) => {
 
 // ===================================================================
 //  НАСТРОЙКИ ПРИВАТНОСТИ
-//  POST /api/friends/settings { share_calendar } — видят ли друзья все мои дни в календаре
+//  POST /api/friends/settings { share_calendar?, show_records? }
+//   share_calendar — видят ли друзья все мои дни в календаре
+//   show_records   — видят ли друзья мои личные рекорды
+//  Меняем только то, что прислали.
 // ===================================================================
 router.post('/settings', async (req, res) => {
-  const share = req.body.share_calendar !== false;
-  await query('UPDATE users SET share_calendar = $1 WHERE id = $2', [share, req.me.id]);
-  res.json({ ok: true, share_calendar: share });
+  await socialReady;
+  const out = { ok: true };
+  if (typeof req.body.share_calendar === 'boolean') {
+    await query('UPDATE users SET share_calendar = $1 WHERE id = $2', [req.body.share_calendar, req.me.id]);
+    out.share_calendar = req.body.share_calendar;
+  }
+  if (typeof req.body.show_records === 'boolean') {
+    await query('UPDATE users SET show_records = $1 WHERE id = $2', [req.body.show_records, req.me.id]);
+    out.show_records = req.body.show_records;
+  }
+  res.json(out);
 });
 
 // ===================================================================
@@ -608,7 +647,8 @@ router.get('/:friendId/profile', async (req, res) => {
   if (!friendId) return res.status(400).json({ error: 'Неверный id' });
   if (!(await areFriends(req.me.id, friendId))) return res.status(403).json({ error: 'Вы пока не друзья' });
 
-  const userRes = await query(`SELECT ${PUBLIC_USER}, u.share_calendar FROM users u WHERE u.id = $1`, [friendId]);
+  await socialReady;
+  const userRes = await query(`SELECT ${PUBLIC_USER}, u.share_calendar, u.show_records FROM users u WHERE u.id = $1`, [friendId]);
   const user = userRes.rows[0];
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
 
@@ -633,9 +673,17 @@ router.get('/:friendId/profile', async (req, res) => {
     ]),
   ]);
 
+  // Личные рекорды: лучший результат в каждой дисциплине (если человек не скрыл их)
+  let records = null;
+  if (user.show_records !== false || friendId === req.me.id) {
+    const starts = (await startsByUser([friendId]))[friendId] || [];
+    records = bestResults(starts).map((b) => ({ discipline: b.discipline, result: b.result, date: b.date, name: b.name || null }));
+  }
+
   res.json({
     user,
     stats: stats.rows[0],
+    records,
     days: days.rows.map((d) => ({ date: d.date, type: d.type, public: d.public, id: d.public ? d.id : null })),
     workouts: await withSocial(workouts.rows, req.me.id),
   });
