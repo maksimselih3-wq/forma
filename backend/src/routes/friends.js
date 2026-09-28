@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth, validateInitData } from '../telegramAuth.js';
 import { volumeKm, bestResults, parseResult, disciplineKey, higherIsBetter } from '../ai.js';
-import { socialReady, isCoachOf, shareGroup, newGroupCode, refCode, referralStats, REF_MIN_WORKOUTS, REF_MAX_BONUS } from '../social.js';
+import { socialReady, visibleToSql, canSeeCustom, manualRecordsAsStarts, pioneerNo, isCoachOf, shareGroup, newGroupCode, refCode, referralStats, REF_MIN_WORKOUTS, REF_MAX_BONUS } from '../social.js';
 
 const router = Router();
 
@@ -73,6 +73,7 @@ async function getVisibleWorkout(meId, workoutId) {
   if (!w) return null;
   if (w.user_id === meId) return w;
   if (await isCoachOf(meId, w.user_id)) return w; // тренер видит все записи своих спортсменов
+  if (w.visibility === 'custom') return (await canSeeCustom(meId, w.id)) ? w : null; // открыта выбранным друзьям
   if (w.visibility !== 'public') return null;
   return (await areFriends(meId, w.user_id)) || (await shareGroup(meId, w.user_id)) ? w : null;
 }
@@ -100,11 +101,16 @@ const asComp = (c) => { if (typeof c === 'string') { try { return JSON.parse(c);
 // Все старты этих людей: { userId: [{ id, date, competition }] }
 async function startsByUser(userIds) {
   if (!userIds.length) return {};
-  const r = await query(
-    `SELECT id, user_id, to_char(date, 'YYYY-MM-DD') AS date, competition FROM workouts
-     WHERE user_id = ANY($1::int[]) AND competition IS NOT NULL`, [userIds]);
+  const [r, manual] = await Promise.all([
+    query(
+      `SELECT id, user_id, to_char(date, 'YYYY-MM-DD') AS date, competition FROM workouts
+       WHERE user_id = ANY($1::int[]) AND competition IS NOT NULL`, [userIds]),
+    manualRecordsAsStarts(userIds),
+  ]);
   const by = {};
   r.rows.forEach((x) => { (by[x.user_id] ||= []).push({ ...x, competition: asComp(x.competition) }); });
+  // рекорды, внесённые вручную, тоже считаются: и в блоке «Личные рекорды», и при проверке «это PB?»
+  Object.entries(manual).forEach(([uid, list]) => { (by[uid] ||= []).push(...list); });
   return by;
 }
 // Старт — личный рекорд, если он лучше всех прошлых стартов человека в этой дисциплине
@@ -286,7 +292,7 @@ router.get('/feed', async (req, res) => {
        UNION SELECT $1
      )
      ${WORKOUT_SELECT}
-     WHERE w.user_id IN (SELECT id FROM people) AND w.visibility = 'public'
+     WHERE w.user_id IN (SELECT id FROM people) AND (w.user_id = $1 OR ${visibleToSql('$1')})
        AND ($2::date IS NULL OR (w.date, w.id) < ($2::date, $3::int))
      ORDER BY w.date DESC, w.id DESC
      LIMIT 15`,
@@ -587,7 +593,7 @@ router.get('/groups/:id/feed', async (req, res) => {
   const r = await query(
     `${WORKOUT_SELECT}
      WHERE w.user_id IN (SELECT user_id FROM group_members WHERE group_id = $1)
-       AND (w.visibility = 'public' OR w.user_id = $2 OR $3)
+       AND (${visibleToSql('$2')} OR w.user_id = $2 OR $3)
        AND w.date > CURRENT_DATE - 30
      ORDER BY w.date DESC, w.id DESC LIMIT 40`, [gid, req.me.id, isCoach]);
   res.json({ workouts: await withSocial(r.rows, req.me.id) });
@@ -651,6 +657,7 @@ router.get('/:friendId/profile', async (req, res) => {
   const userRes = await query(`SELECT ${PUBLIC_USER}, u.share_calendar, u.show_records FROM users u WHERE u.id = $1`, [friendId]);
   const user = userRes.rows[0];
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  user.pioneer_no = await pioneerNo(user.id).catch(() => null);
 
   const [stats, days, workouts] = await Promise.all([
     query(
@@ -663,21 +670,25 @@ router.get('/:friendId/profile', async (req, res) => {
     ),
     // Календарь: если человек разрешил — все его дни (без подробностей закрытых), иначе только открытые
     query(
-      `SELECT date, type, visibility = 'public' AS public, id FROM workouts
-       WHERE user_id = $1 AND date > CURRENT_DATE - 400 AND ($2 OR visibility = 'public')
-       ORDER BY date`,
-      [friendId, user.share_calendar !== false || friendId === req.me.id]
+      `SELECT w.date, w.type, ${visibleToSql('$3')} AS public, w.id FROM workouts w
+       WHERE w.user_id = $1 AND w.date > CURRENT_DATE - 400 AND ($2 OR ${visibleToSql('$3')})
+       ORDER BY w.date`,
+      // для «Как меня видят друзья» смотрим глазами постороннего друга (id 0 — никто)
+      [friendId, user.share_calendar !== false || friendId === req.me.id, friendId === req.me.id ? 0 : req.me.id]
     ),
-    query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.visibility = 'public' ORDER BY w.date DESC LIMIT 30`, [
-      friendId,
-    ]),
+    // «Как меня видят друзья» (свой профиль) — только открытые всем, остальным — ещё и открытые лично им
+    query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND ${friendId === req.me.id ? "w.visibility = 'public'" : visibleToSql('$2')}
+           ORDER BY w.date DESC LIMIT 30`, friendId === req.me.id ? [friendId] : [friendId, req.me.id]),
   ]);
 
   // Личные рекорды: лучший результат в каждой дисциплине (если человек не скрыл их)
   let records = null;
   if (user.show_records !== false || friendId === req.me.id) {
     const starts = (await startsByUser([friendId]))[friendId] || [];
-    records = bestResults(starts).map((b) => ({ discipline: b.discipline, result: b.result, date: b.date, name: b.name || null }));
+    records = bestResults(starts).map((b) => ({
+      discipline: b.discipline, result: b.result, date: b.date === '1900-01-01' ? null : b.date, name: b.name || null,
+      manual: String(b.id).startsWith('m'),
+    }));
   }
 
   res.json({
@@ -693,8 +704,8 @@ router.get('/:friendId/profile', async (req, res) => {
 router.get('/:friendId/workouts', async (req, res) => {
   if (!(await areFriends(req.me.id, req.params.friendId))) return res.status(403).json({ error: 'Вы пока не друзья' });
   const result = await query(
-    `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.visibility = 'public' ORDER BY w.date DESC LIMIT 30`,
-    [parseInt(req.params.friendId, 10)]
+    `${WORKOUT_SELECT} WHERE w.user_id = $1 AND ${visibleToSql('$2')} ORDER BY w.date DESC LIMIT 30`,
+    [parseInt(req.params.friendId, 10), req.me.id]
   );
   res.json({ workouts: await withSocial(result.rows, req.me.id) });
 });
