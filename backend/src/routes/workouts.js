@@ -3,6 +3,7 @@ import { query, pool, WORKOUT_SELECT, dbReady } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday, isValidDate, daysBetween } from '../streak.js';
 import { getWorkoutFeedback, parseWorkoutText, athleteContext, workSignature } from '../ai.js';
+import { socialReady } from '../social.js';
 
 const router = Router();
 
@@ -102,6 +103,38 @@ function cleanExercises(list) {
 }
 
 // Сохранить беговые повторы и упражнения записи (старые удаляем, новые вставляем)
+// Кому видна запись: 'private' — только мне, 'public' — всем друзьям, 'custom' — выбранным друзьям
+function cleanVisibility(v) {
+  return v === 'public' || v === 'custom' ? v : 'private';
+}
+// Список выбранных друзей для 'custom' (берём только настоящих друзей, до 200 человек)
+async function saveVisibleTo(client, workoutId, ownerId, visibility, list) {
+  await socialReady;
+  await client.query('DELETE FROM workout_visible_to WHERE workout_id = $1', [workoutId]);
+  if (visibility !== 'custom') return [];
+  const ids = [...new Set((Array.isArray(list) ? list : []).map((x) => parseInt(x, 10)).filter((x) => x > 0))].slice(0, 200);
+  if (!ids.length) return [];
+  const ok = await client.query(
+    `SELECT CASE WHEN user_id = $1 THEN friend_id ELSE user_id END AS id FROM friendships
+     WHERE status = 'accepted' AND (user_id = $1 OR friend_id = $1)
+       AND (CASE WHEN user_id = $1 THEN friend_id ELSE user_id END) = ANY($2::int[])`, [ownerId, ids]);
+  const good = ok.rows.map((r) => r.id);
+  for (const id of good) {
+    await client.query('INSERT INTO workout_visible_to (workout_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [workoutId, id]);
+  }
+  return good;
+}
+// Для своих записей: кому из друзей открыта каждая 'custom'-запись
+async function attachVisibleTo(rows) {
+  const ids = rows.filter((w) => w.visibility === 'custom').map((w) => w.id);
+  if (!ids.length) return rows;
+  await socialReady;
+  const r = await query('SELECT workout_id, user_id FROM workout_visible_to WHERE workout_id = ANY($1::int[])', [ids]);
+  const by = {};
+  r.rows.forEach((x) => { (by[x.workout_id] ||= []).push(x.user_id); });
+  return rows.map((w) => (w.visibility === 'custom' ? { ...w, visible_to: by[w.id] || [] } : w));
+}
+
 async function saveChildren(client, workoutId, sets, exercises) {
   await client.query('DELETE FROM workout_sets WHERE workout_id = $1', [workoutId]);
   if (Array.isArray(sets)) {
@@ -189,6 +222,7 @@ router.post('/parse', requireTelegramAuth, async (req, res) => {
 // Новую запись можно создать только за сегодня или вчера; существующую — обновить за любой день.
 router.post('/', requireTelegramAuth, async (req, res) => {
   await schemaReady;
+  await socialReady;
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -220,7 +254,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const values = [warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, visibility || 'private', hrAvg, hrMax, hrMin];
+    const values = [warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, cleanVisibility(visibility), hrAvg, hrMax, hrMin];
     const found = await client.query(
       'SELECT id FROM workouts WHERE user_id = $1 AND date = $2 AND session = $3',
       [user.id, date, session]
@@ -260,8 +294,10 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     }
 
     await saveChildren(client, workout.id, sets, exercises);
+    const visibleTo = await saveVisibleTo(client, workout.id, user.id, workout.visibility, req.body.visible_to);
 
     await client.query('COMMIT');
+    if (workout.visibility === 'custom') workout.visible_to = visibleTo;
 
     // Серию пересчитываем целиком — запись задним числом может «склеить» разорванную серию
     const streak = await recalcStreak(user.id, today);
@@ -324,7 +360,7 @@ router.get('/', requireTelegramAuth, async (req, res) => {
   await schemaReady;
   const result = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 ORDER BY w.date DESC, w.session`, [user.id]);
 
-  res.json({ workouts: result.rows, streak: { current: user.current_streak, longest: user.longest_streak } });
+  res.json({ workouts: await attachVisibleTo(result.rows), streak: { current: user.current_streak, longest: user.longest_streak } });
 });
 
 // GET /api/workouts/:id — одна запись с повторами и упражнениями
@@ -335,7 +371,7 @@ router.get('/:id', requireTelegramAuth, async (req, res) => {
   const result = await query(`${WORKOUT_SELECT} WHERE w.id = $1 AND w.user_id = $2`, [req.params.id, user.id]);
 
   if (result.rows.length === 0) return res.status(404).json({ error: 'Запись не найдена' });
-  res.json({ workout: result.rows[0] });
+  res.json({ workout: (await attachVisibleTo(result.rows))[0] });
 });
 
 // PUT /api/workouts/:id — обновить существующую запись
@@ -354,6 +390,7 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
   const competitionJson = competition ? JSON.stringify(competition) : null; // в базу — строкой JSON
 
   await schemaReady;
+  await socialReady;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -362,7 +399,7 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
       `UPDATE workouts SET type=$1, warmup=$2, cooldown=$3, feeling=$4, rpe=$5, notes=$6, visibility=$7,
          hr_avg=$8, hr_max=$9, hr_min=$10, competition=$11
        WHERE id=$12 AND user_id=$13 RETURNING *`,
-      [type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, visibility || 'private', hrAvg, hrMax, hrMin, competitionJson, req.params.id, user.id]
+      [type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, cleanVisibility(visibility), hrAvg, hrMax, hrMin, competitionJson, req.params.id, user.id]
     );
 
     if (updated.rows.length === 0) {
@@ -371,9 +408,10 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
     }
 
     await saveChildren(client, req.params.id, sets, exercises);
+    const visibleTo = await saveVisibleTo(client, updated.rows[0].id, user.id, updated.rows[0].visibility, req.body.visible_to);
 
     await client.query('COMMIT');
-    res.json({ workout: { ...updated.rows[0], sets, exercises } });
+    res.json({ workout: { ...updated.rows[0], sets, exercises, ...(updated.rows[0].visibility === 'custom' ? { visible_to: visibleTo } : {}) } });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
