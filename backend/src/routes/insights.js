@@ -47,7 +47,7 @@ router.get('/', requireTelegramAuth, async (req, res) => {
     res.json({ insight, workoutsCount: result.rows.length, period });
   } catch (err) {
     console.error('Insight generation failed:', err.message);
-    res.status(500).json({ error: 'Не удалось получить разбор от ИИ' });
+    res.status(500).json({ error: 'Не удалось получить разбор от Fom' });
   }
 });
 
