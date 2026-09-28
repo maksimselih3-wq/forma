@@ -97,7 +97,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
 
     const contextSummary = result.rows.map(describeWorkout).join('\n');
 
-    const reply = await getChatReply(contextSummary, history, message, today, await athleteContext(user.id));
+    const reply = await getChatReply(contextSummary, history, message, today, await athleteContext(user.id), result.rows);
     res.json({ reply, left });
   } catch (err) {
     if (!admin) {
