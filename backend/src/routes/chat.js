@@ -104,7 +104,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       await query('UPDATE chat_usage SET count = GREATEST(0, count - 1) WHERE user_id = $1 AND day = $2::date', [user.id, mskToday()]).catch(() => {});
     }
     console.error('Chat failed:', err.message);
-    res.status(500).json({ error: 'Не удалось получить ответ от ИИ' });
+    res.status(500).json({ error: 'Не удалось получить ответ от Fom' });
   }
 });
 
