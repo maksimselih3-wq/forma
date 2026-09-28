@@ -42,10 +42,22 @@ export const remindersReady = (async () => {
     await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS remind_enabled BOOLEAN DEFAULT TRUE');
     await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS reminded_on DATE');
     await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS digest_on DATE');
+    // отдельные переключатели в «Настройках»: итоги недели и сообщения о совместных пробежках
+    await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS digest_enabled BOOLEAN');
+    await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS partners_notify BOOLEAN DEFAULT TRUE');
   } catch (err) {
     console.error('Reminder columns failed:', err.message);
   }
 })();
+
+// Итоги недели и уведомления о совместных пробежках — включить/выключить
+export async function setNotifyPrefs(telegramId, { digest, partners } = {}) {
+  await remindersReady;
+  if (typeof digest === 'boolean') await query('UPDATE users SET digest_enabled = $1 WHERE telegram_id = $2', [digest, telegramId]);
+  if (typeof partners === 'boolean') await query('UPDATE users SET partners_notify = $1 WHERE telegram_id = $2', [partners, telegramId]);
+  const r = await query('SELECT COALESCE(digest_enabled, remind_enabled, TRUE) AS digest, COALESCE(partners_notify, TRUE) AS partners FROM users WHERE telegram_id = $1', [telegramId]);
+  return r.rows[0] || null;
+}
 
 export async function setReminderEnabled(telegramId, enabled) {
   await remindersReady;
@@ -135,7 +147,7 @@ export async function sendWeeklyDigests(send, { force = false, onlyTelegramId = 
   const monday = addDaysStr(sunday, -((mskDow() + 6) % 7));
   const users = await query(
     `SELECT u.id, u.telegram_id, u.first_name FROM users u
-     WHERE COALESCE(u.remind_enabled, TRUE)
+     WHERE COALESCE(u.digest_enabled, u.remind_enabled, TRUE)
        ${onlyTelegramId ? 'AND u.telegram_id = $3' : 'AND (u.digest_on IS NULL OR u.digest_on < $2::date)'}
        AND EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = u.id AND w.date BETWEEN $1::date AND $2::date)`,
     onlyTelegramId ? [monday, sunday, onlyTelegramId] : [monday, sunday]
