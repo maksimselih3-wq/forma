@@ -257,16 +257,37 @@ function formatExercise(e) {
 
 // ---------- Беговой объём: считаем программой, а не «в уме» у модели ----------
 // Ровно так же, как в приложении (графики «Разбора», календарь, цели недели):
-// отрезки (метры × повторы) + все «N км» в разминке и заминке.
+// отрезки (метры × повторы) + все «N км»/«N м» в разминке и заминке + дистанция старта.
+// Метры из текста: «кросс 12 км», «3000 м», «3 000м», «ускорения 5×100 м», «6 по 400 м»
+// (темп «3:40/км», «4:00 км» и минуты «мин» не считаются)
+function textMeters(text) {
+  const t = String(text || '').replace(/(\d)[\s ](\d{3})(?!\d)/g, '$1$2');
+  const re = /(?:(\d{1,2})\s*(?:[x×х*]|по)\s*)?(?<![\d:.,])(\d+(?:[.,]\d+)?)\s*(км|km|м|m)(?![a-zа-яё])(?!\s*\/\s*[чсh])/gi;
+  let m = 0;
+  for (const x of t.matchAll(re)) {
+    const val = Number(x[2].replace(',', '.'));
+    const unit = x[3].toLowerCase();
+    const mult = x[1] && Number(x[1]) > 0 && Number(x[1]) <= 50 ? Number(x[1]) : 1;
+    if (unit === 'км' || unit === 'km') { if (val > 0 && val < 100) m += val * 1000 * mult; }
+    else if (val >= 20 && val <= 30000) m += val * mult;
+  }
+  return m;
+}
+// Повторы: «10», «3×4» (серии × повторы)
+function repsCount(r) {
+  const s = String(r ?? '').trim();
+  const x = /^(\d+)\s*[x×х*]\s*(\d+)$/i.exec(s);
+  if (x) return Number(x[1]) * Number(x[2]);
+  const n = parseInt(s, 10);
+  return n > 0 ? n : 1;
+}
 export function volumeKm(w) {
   if (!w || w.type !== 'training') return 0;
   let m = 0;
-  (Array.isArray(w.sets) ? w.sets : []).forEach((s) => { m += (Number(s.distance_m) || 0) * (Number(s.reps) || 1); });
-  const text = [w.warmup, w.cooldown].filter(Boolean).join(' ');
-  for (const x of text.matchAll(/(\d+(?:[.,]\d+)?)\s*км/gi)) {
-    const km = Number(x[1].replace(',', '.'));
-    if (km > 0 && km < 100) m += km * 1000;
-  }
+  (Array.isArray(w.sets) ? w.sets : []).forEach((s) => { m += (Number(s.distance_m) || 0) * repsCount(s.reps); });
+  m += textMeters([w.warmup, w.cooldown].filter(Boolean).join('\n'));
+  // старт: дистанция из дисциплины («5000 м», «10 км»)
+  if (w.competition && w.competition.discipline) m += textMeters(w.competition.discipline);
   return m / 1000;
 }
 const kmFmt = (km) => String(Math.round(km * 10) / 10).replace('.', ',');
