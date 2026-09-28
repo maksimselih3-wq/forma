@@ -112,6 +112,104 @@ function mskDateLabel(d) {
   return new Date(d).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 }
 
+// ---------- Статистика для админа: /stats и отчёт по понедельникам ----------
+async function safeQ(sql, params = []) {
+  try { return (await query(sql, params)).rows[0] || {}; } catch (e) { return {}; }
+}
+function pct(a, b) { return b ? `${Math.round((a / b) * 100)}%` : '—'; }
+
+export async function buildStats() {
+  // «сегодня» по Москве
+  const today = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
+  const u = await safeQ(
+    `SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE created_at >= $1::date - 6)::int AS new7,
+       count(*) FILTER (WHERE created_at >= $1::date)::int AS new_today
+     FROM users`, [today]);
+  const a = await safeQ(
+    `SELECT count(DISTINCT user_id) FILTER (WHERE date = $1::date)::int AS dau,
+       count(DISTINCT user_id) FILTER (WHERE date >= $1::date - 6)::int AS wau,
+       count(DISTINCT user_id) FILTER (WHERE date >= $1::date - 29)::int AS mau,
+       count(*) FILTER (WHERE date >= $1::date - 6)::int AS entries7,
+       count(*) FILTER (WHERE date >= $1::date - 6 AND type = 'training')::int AS trainings7,
+       count(*) FILTER (WHERE date >= $1::date - 6 AND competition IS NOT NULL)::int AS comps7,
+       count(*)::int AS entries_total
+     FROM workouts`, [today]);
+  // Удержание: кто пришёл 7–13 дней назад — сколько из них записывали что-то за последние 7 дней
+  const r1 = await safeQ(
+    `SELECT count(*)::int AS cohort,
+       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = u.id AND w.date >= $1::date - 6))::int AS back
+     FROM users u WHERE u.created_at >= $1::date - 13 AND u.created_at < $1::date - 6`, [today]);
+  // Кто с нами 2+ недели — сколько активны на этой неделе
+  const r2 = await safeQ(
+    `SELECT count(*)::int AS cohort,
+       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = u.id AND w.date >= $1::date - 6))::int AS back
+     FROM users u WHERE u.created_at < $1::date - 13`, [today]);
+  // Зарегистрировались, но ни разу ничего не записали
+  const zero = await safeQ(
+    `SELECT count(*)::int AS n FROM users u WHERE NOT EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = u.id)`);
+  const fom = await safeQ(
+    `SELECT COALESCE(sum(count) FILTER (WHERE day = $1::date), 0)::int AS today,
+       COALESCE(sum(count) FILTER (WHERE day >= $1::date - 6), 0)::int AS week,
+       count(*) FILTER (WHERE day >= $1::date - 6 AND count >= 7)::int AS hit_limit
+     FROM chat_usage`, [today]);
+  const fb = await safeQ(`SELECT count(*)::int AS n FROM workouts WHERE ai_feedback IS NOT NULL AND date >= $1::date - 6`, [today]);
+  const g = await safeQ(`SELECT count(*)::int AS groups, count(*) FILTER (WHERE coach_mode)::int AS coach FROM groups`);
+  const gm = await safeQ(`SELECT count(DISTINCT user_id)::int AS n FROM group_members`);
+  const ref = await safeQ(`SELECT count(*) FILTER (WHERE invitee_id IS NOT NULL)::int AS n FROM referrals`);
+  const rem = await safeQ(`SELECT count(*) FILTER (WHERE COALESCE(remind_enabled, TRUE))::int AS on FROM users`);
+  let top = [];
+  try {
+    top = (await query(
+      `SELECT first_name, last_name, username, current_streak FROM users
+       WHERE current_streak > 0 ORDER BY current_streak DESC LIMIT 5`)).rows;
+  } catch (e) {}
+
+  const name = (x) => escapeHtml([x.first_name, x.last_name].filter(Boolean).join(' ') || (x.username ? '@' + x.username : '—'));
+  const lines = [
+    `📊 <b>Статистика Forma</b> · ${today}`,
+    '',
+    `👥 <b>Пользователи:</b> ${u.total ?? 0} (новых за неделю: ${u.new7 ?? 0}, сегодня: ${u.new_today ?? 0})`,
+    `😴 Ни разу ничего не записали: ${zero.n ?? 0}`,
+    '',
+    `📝 <b>Активность</b> (хоть одна запись):`,
+    `• сегодня: ${a.dau ?? 0} · за 7 дней: ${a.wau ?? 0} · за 30 дней: ${a.mau ?? 0}`,
+    `• записей за неделю: ${a.entries7 ?? 0} (тренировок ${a.trainings7 ?? 0}, стартов ${a.comps7 ?? 0}) · всего: ${a.entries_total ?? 0}`,
+    '',
+    `🔁 <b>Возвращаются:</b>`,
+    `• пришли 1–2 недели назад: ${r1.back ?? 0} из ${r1.cohort ?? 0} активны на этой неделе (${pct(r1.back, r1.cohort)})`,
+    `• с нами 2+ недели: ${r2.back ?? 0} из ${r2.cohort ?? 0} активны (${pct(r2.back, r2.cohort)})`,
+    '',
+    `🤖 <b>Fom:</b> сообщений в чат сегодня ${fom.today ?? 0}, за неделю ${fom.week ?? 0}` +
+      (fom.hit_limit ? ` · упирались в лимит: ${fom.hit_limit} раз` : ''),
+    `• отзывов о тренировках за неделю: ${fb.n ?? 0}`,
+    '',
+    `👥 Групп: ${g.groups ?? 0} (тренерских ${g.coach ?? 0}), в группах ${gm.n ?? 0} чел. · пришли по приглашению: ${ref.n ?? 0}`,
+    `🔔 Напоминания включены у ${rem.on ?? 0}`,
+  ];
+  if (top.length) lines.push('', '🔥 <b>Самые длинные серии:</b>', ...top.map((x, i) => `${i + 1}. ${name(x)} — ${x.current_streak} дн.`));
+  return lines.join('\n');
+}
+
+// Отчёт тебе каждый понедельник в 9:00 (МСК) — один раз за неделю
+async function weeklyAdminReport() {
+  const now = new Date(Date.now() + 3 * 3600000);
+  if (now.getUTCDay() !== 1 || now.getUTCHours() < 9 || now.getUTCHours() >= 12) return;
+  const key = `admin-report-${now.toISOString().slice(0, 10)}`;
+  try {
+    const claim = await query(
+      `INSERT INTO giveaway_draws (period_key, kind) VALUES ($1, 'report') ON CONFLICT (period_key) DO NOTHING RETURNING id`, [key]);
+    if (!claim.rows.length) return;
+    const admin = await query(`SELECT telegram_id FROM users WHERE LOWER(username) = 'maksimshelikh'`);
+    const chat = process.env.ADMIN_TELEGRAM_ID || admin.rows[0]?.telegram_id;
+    if (chat) await tg('sendMessage', { chat_id: chat, text: `🗓 Недельный отчёт\n\n${await buildStats()}`, parse_mode: 'HTML' });
+  } catch (err) {
+    console.error('Admin report failed:', err.message);
+  }
+}
+setTimeout(weeklyAdminReport, 30000);
+setInterval(weeklyAdminReport, 10 * 60 * 1000);
+
 // ---------- Ответы на сообщения ----------
 function welcomeText(name) {
   return (
@@ -204,6 +302,13 @@ async function handleMessage(msg) {
        FROM users u WHERE telegram_id = $1`, [msg.from.id]);
     const today = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
     await sendHtml(chatId, reminderText(u.rows[0] || {}, today));
+    return;
+  }
+
+  // Статистика приложения — только для админа
+  if (text === '/stats') {
+    if (!(await isAdmin(msg.from.id))) return;
+    await tg('sendMessage', { chat_id: chatId, text: await buildStats(), parse_mode: 'HTML' });
     return;
   }
 
