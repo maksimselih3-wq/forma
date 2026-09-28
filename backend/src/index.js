@@ -8,6 +8,8 @@ import friendRoutes from './routes/friends.js';
 import insightRoutes from './routes/insights.js';
 import chatRoutes from './routes/chat.js';
 import botRoutes from './routes/bot.js';
+import assetRoutes from './routes/asset.js';
+import partnerRoutes from './routes/partners.js';
 
 dotenv.config();
 
@@ -21,6 +23,8 @@ app.use('/api/friends', friendRoutes);
 app.use('/api/insights', insightRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/bot', botRoutes); // Telegram-бот: приветствие на /start и оформление
+app.use('/api/partners', partnerRoutes); // совместные пробежки: поиск напарников в своём городе
+app.use('/api/asset', assetRoutes); // скрипт Telegram, шрифты, картинки подарков — для работы в России без VPN
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
