@@ -17,7 +17,8 @@ const FOM_INTRO = `Тебя зовут Fom — ты ИИ-помощник спо
 - советы по восстановлению вне тренировки (сон, питание, питьё, заминка, растяжка) — можно, коротко.`;
 
 // Как считать объём — спортсмены часто пишут кросс в разминку или заминку, а не в повторы
-const VOLUME_RULE = `Объём (километры, минуты, отрезки) считай по ВСЕМУ, что записано в тренировке: разминка, основная работа, заминка и заметки. Спортсмены часто пишут кросс или длительный бег (например «12 км, 55 мин») в разминку или заминку — это тоже часть объёма, учитывай его. Если цифры взяты из текста, а не из таблицы повторов, коротко скажи об этом. Не выдумывай то, чего в записях нет.
+const VOLUME_RULE = `Отрезки «по времени» (фартлек, вставки) — это работа по минутам: «1'» = минута, «30"» = секунды; если указан темп, примерная дистанция отрезка уже посчитана. Если вставки сделаны внутри кросса, они уже входят в его километры — не прибавляй их второй раз.
+Объём (километры, минуты, отрезки) считай по ВСЕМУ, что записано в тренировке: разминка, основная работа, заминка и заметки. Спортсмены часто пишут кросс или длительный бег (например «12 км, 55 мин») в разминку или заминку — это тоже часть объёма, учитывай его. Если цифры взяты из текста, а не из таблицы повторов, коротко скажи об этом. Не выдумывай то, чего в записях нет.
 Силовую работу и ОФП (упражнения с подходами, повторами и весом) учитывай отдельно от бегового объёма: это тоже нагрузка, особенно тяжёлые приседания, прыжки и плиометрика.`;
 
 // Как читать пульс
@@ -166,7 +167,7 @@ function weekday(dateStr) {
 // ---------- Темп ----------
 // «1:05» → 65, «65 сек» → 65, «57-58 с» → 57.5, «4 мин 10 с» → 250, «1:02:30» → 3750, «3 мин» → 180
 export function parseSeconds(raw) {
-  const t = String(raw ?? '').toLowerCase().replace(',', '.').trim();
+  const t = String(raw ?? '').toLowerCase().replace(',', '.').replace(/[′’]/g, "'").replace(/[″”]/g, '"').trim();
   if (!t || /\/\s*км|мин\s*\/|в\s*км/.test(t)) return null; // уже темп на км — не считаем
   const hms = t.match(/(\d+):(\d{2})(?::(\d{2}))?/);
   if (hms) {
@@ -178,6 +179,7 @@ export function parseSeconds(raw) {
   // \b с русскими буквами не работает — поэтому «после буквы не идёт другая буква»
   let min = pick(/(\d+(?:\.\d+)?)\s*(?:мин|m(?![a-zа-яё])|')/);
   let sec = pick(/(\d+(?:\.\d+)?)\s*(?:сек|с(?![a-zа-яё])|s(?![a-zа-яё])|")/);
+  if (min && !sec) { const tail = t.match(/'\s*(\d{1,2})$/); if (tail) sec = Number(tail[1]); } // «1'30» без кавычек
   if (range && !/мин/.test(t)) sec = (Number(range[1]) + Number(range[2])) / 2;
   if (!min && !sec) {
     const n = t.match(/^(\d+(?:\.\d+)?)$/);
@@ -202,6 +204,19 @@ function setPace(s) {
   return paceLabel(parseSeconds(s.time_or_pace), m);
 }
 
+// «60» → «1'», «90» → «1'30"», «30» → «30"»
+export function durLabel(sec) {
+  sec = Math.round(Number(sec) || 0);
+  const m = Math.floor(sec / 60), r = sec % 60;
+  return m ? `${m}'${r ? String(r).padStart(2, '0') + '"' : ''}` : `${r}"`;
+}
+// Вставка по времени в темпе «3:40» → примерно сколько метров (темп 2:00–9:00 на км)
+function durationMeters(s) {
+  const pace = parseSeconds(String(s.time_or_pace || '').replace(/\/\s*км|мин\s*\/\s*км|в\s*км/gi, ''));
+  if (!s.duration_s || !pace || pace < 120 || pace > 540) return null;
+  return Math.round(((s.duration_s / pace) * 1000) / 10) * 10;
+}
+
 // Кроссы и длительные в тексте: «10 км за 50 мин», «12 км, 55 мин», «8 км 36:30» → считаем темп
 export function textPaces(text) {
   const out = [];
@@ -218,11 +233,14 @@ export function textPaces(text) {
 // Один повтор/отрезок одной строкой: «400 м ×6, время/темп 1:05, отдых 2 мин»
 function formatSet(s) {
   const parts = [];
-  if (s.distance_m) parts.push(`${s.distance_m} м`);
+  if (s.duration_s) parts.push(`по времени ${durLabel(s.duration_s)} (${s.duration_s} с)`);
+  else if (s.distance_m) parts.push(`${s.distance_m} м`);
   if (s.reps) parts.push(`×${s.reps}`);
   if (s.time_or_pace) parts.push(`время/темп ${s.time_or_pace}`);
   const pace = setPace(s);
   if (pace) parts.push(`темп ≈ ${pace}`);
+  const approx = durationMeters(s);
+  if (approx) parts.push(`≈ ${approx} м за отрезок`);
   if (s.rest_between) parts.push(`отдых ${s.rest_between}`);
   return parts.join(', ');
 }
@@ -418,7 +436,7 @@ export async function parseWorkoutText(text) {
 {
   "type": "training" или "rest",
   "warmup": строка или null,
-  "sets": [ { "distance_m": число или null, "reps": число или null, "time_or_pace": строка или null, "rest_between": строка или null } ],
+  "sets": [ { "distance_m": число или null, "duration_s": число секунд или null, "reps": число или null, "time_or_pace": строка или null, "rest_between": строка или null } ],
   "exercises": [ { "name": строка, "sets": число или null, "reps": строка или null, "weight": строка или null } ],
   "cooldown": строка или null,
   "rpe": число 1-10 или null,
@@ -432,6 +450,9 @@ export async function parseWorkoutText(text) {
 Правила:
 - "sets" — беговые отрезки основной работы. «6×400 по 65 отдых 2 мин» → {"distance_m":400,"reps":6,"time_or_pace":"65 сек","rest_between":"2 мин"}. «3×1 км» → distance_m 1000. Время/темп пиши как у спортсмена («1:05», «65 сек», «3:20/км»).
 - Если отрезки разные («400, 300, 200») — отдельный элемент на каждый.
+- Обозначения времени: «1'» = 1 минута, «30"» = 30 секунд, «1'30"» = 1 минута 30 секунд, «2'» = 2 минуты. Так же пиши их и в ответе (time_or_pace, rest_between): «1'», «30"».
+- Отрезки ПО ВРЕМЕНИ (фартлек, вставки, «10 по 1 минуте») → "duration_s" в секундах, "distance_m": null. Темп вставки («в темпе 3:40») → "time_or_pace": «3:40/км». Отдых между ними («через 1' спокойно», «1 мин трусцой») → "rest_between".
+- Вставки ВНУТРИ кросса («кросс 10 км, внутри 10 вставок по 1' в темпе 3:40 через 1' спокойно»): кросс → "warmup" («кросс 10 км с вставками»), вставки → "sets" по времени. Вставки уже входят в эти 10 км — не прибавляй их к объёму.
 - Кросс, лёгкий бег, СБУ, суставная перед работой → "warmup" коротким текстом (например «3 км трусцой + СБУ»). После работы → "cooldown".
 - Если тренировка — только длительный бег/кросс без отрезков, запиши его в "warmup" (например «кросс 12 км, 55 мин»), а "sets" оставь пустым.
 - Силовая, ОФП, прыжки, барьеры, пресс, планка → "exercises". Вес — только число в кг, если указан («80»), или «свой вес». Повторы строкой («10», «30 сек», «по 5 на ногу»).
@@ -492,7 +513,7 @@ ${PACE_RULE}
 // «Подпись» основной работы: одинаковые отрезки → похожие тренировки (например, «400x6»)
 export function workSignature(sets) {
   const parts = (Array.isArray(sets) ? sets : [])
-    .filter((x) => x.distance_m)
-    .map((x) => `${x.distance_m}x${x.reps || 1}`);
+    .filter((x) => x.distance_m || x.duration_s)
+    .map((x) => (x.duration_s ? `${x.duration_s}sx${x.reps || 1}` : `${x.distance_m}x${x.reps || 1}`));
   return parts.length ? parts.join('+') : null;
 }
