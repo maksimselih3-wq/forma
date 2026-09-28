@@ -32,6 +32,8 @@ const schemaReady = (async () => {
     await query(`CREATE UNIQUE INDEX IF NOT EXISTS workouts_user_date_session ON workouts(user_id, date, session)`);
     // старт (соревнование): название, дисциплина, результат, место — хранится прямо в записи
     await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS competition JSONB`);
+    // отрезок по времени (фартлек, вставки): длительность в секундах вместо метров
+    await query(`ALTER TABLE workout_sets ADD COLUMN IF NOT EXISTS duration_s INT`);
     console.log('Workouts schema OK (вторая тренировка)');
   } catch (err) {
     console.error('Workouts migration failed:', err.message);
@@ -66,6 +68,26 @@ function parseDistance(v) {
   return m <= 1000000 ? Math.round(m) : null;
 }
 
+// Похоже на время, а не на метры: «1'», «30"», «1'30"», «1:30», «1 мин», «30 сек»
+function looksLikeDuration(v) {
+  return typeof v === 'string' && /['"′″’”]|мин|сек|:/i.test(v);
+}
+// Время отрезка в секундах: «1'» → 60, «30"» → 30, «1'30"» → 90, «1:30» → 90, «2 мин» → 120
+function parseDuration(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return v > 0 && v <= 36000 ? Math.round(v) : null;
+  const t = String(v).toLowerCase().replace(',', '.').replace(/[′’]/g, "'").replace(/[″”]/g, '"').replace(/\s+/g, '');
+  let sec = 0;
+  const hms = t.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
+  if (hms) sec = hms[3] != null ? (+hms[1]) * 3600 + (+hms[2]) * 60 + (+hms[3]) : (+hms[1]) * 60 + (+hms[2]);
+  else {
+    const m = t.match(/(\d+(?:\.\d+)?)(?:'|мин)/);
+    const s2 = t.match(/(\d+(?:\.\d+)?)(?:"|сек|с$)/) || (m && t.match(/(?:'|мин)(\d{1,2})$/));
+    sec = (m ? parseFloat(m[1]) * 60 : 0) + (s2 ? parseFloat(s2[1]) : 0);
+  }
+  return sec > 0 && sec <= 36000 ? Math.round(sec) : null;
+}
+
 // Упражнения силовой/ОФП: оставляем только строки, где указано название
 function cleanExercises(list) {
   if (!Array.isArray(list)) return [];
@@ -85,10 +107,13 @@ async function saveChildren(client, workoutId, sets, exercises) {
   if (Array.isArray(sets)) {
     for (let i = 0; i < sets.length; i++) {
       const s = sets[i];
+      // в поле «метры» можно написать время («1'», «30"») — тогда это отрезок по времени
+      const dur = parseDuration(s.duration_s) || (looksLikeDuration(s.distance_m) ? parseDuration(s.distance_m) : null);
+      const dist = dur ? null : parseDistance(s.distance_m);
       await client.query(
-        `INSERT INTO workout_sets (workout_id, order_index, distance_m, reps, time_or_pace, rest_between)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [workoutId, i, parseDistance(s.distance_m), parseInt(s.reps, 10) > 0 ? Math.min(parseInt(s.reps, 10), 500) : null, s.time_or_pace || null, s.rest_between || null]
+        `INSERT INTO workout_sets (workout_id, order_index, distance_m, duration_s, reps, time_or_pace, rest_between)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [workoutId, i, dist, dur, parseInt(s.reps, 10) > 0 ? Math.min(parseInt(s.reps, 10), 500) : null, s.time_or_pace || null, s.rest_between || null]
       );
     }
   }
@@ -142,12 +167,13 @@ router.post('/parse', requireTelegramAuth, async (req, res) => {
       hr_min: hr(p.hr_min),
       sets: (Array.isArray(p.sets) ? p.sets : [])
         .map((s) => ({
-          distance_m: num(s.distance_m, 1, 100000),
+          distance_m: s.duration_s ? null : num(s.distance_m, 1, 100000),
+          duration_s: num(s.duration_s, 1, 36000),
           reps: num(s.reps, 1, 200),
           time_or_pace: txt(s.time_or_pace, 30),
           rest_between: txt(s.rest_between, 30),
         }))
-        .filter((s) => s.distance_m || s.reps || s.time_or_pace)
+        .filter((s) => s.distance_m || s.duration_s || s.reps || s.time_or_pace)
         .slice(0, 50),
       exercises: cleanExercises(p.exercises).slice(0, 50),
     };
@@ -252,7 +278,10 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       );
       // похожая тренировка за последние 4 месяца (та же основная работа, например 6×400)
       let similar = null;
-      const sig = workSignature(sets.map((x) => ({ ...x, distance_m: parseDistance(x.distance_m), reps: parseInt(x.reps, 10) || null })));
+      const sig = workSignature(sets.map((x) => {
+        const dur = parseDuration(x.duration_s) || (looksLikeDuration(x.distance_m) ? parseDuration(x.distance_m) : null);
+        return { ...x, duration_s: dur, distance_m: dur ? null : parseDistance(x.distance_m), reps: parseInt(x.reps, 10) || null };
+      }));
       if (sig) {
         try {
           const prev = await query(
