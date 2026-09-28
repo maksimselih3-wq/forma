@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { query, dbReady } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday } from '../streak.js';
-import { remindersReady, setReminderEnabled } from '../reminders.js';
-import { rememberReferral, settleReferral } from '../social.js';
+import { remindersReady, setReminderEnabled, setNotifyPrefs } from '../reminders.js';
+import { rememberReferral, settleReferral, socialReady, pioneerNo } from '../social.js';
 
 const router = Router();
 
@@ -58,6 +58,9 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
   } catch (err) {
     console.error('Streak recalc on login failed:', err.message);
   }
+  try { user = { ...user, pioneer_no: await pioneerNo(user.id) }; } catch (e) { /* не страшно */ }
+  // настройки уведомлений для экрана «Настройки»
+  user = { ...user, digest_on_pref: user.digest_enabled ?? user.remind_enabled ?? true, partners_notify: user.partners_notify !== false };
 
   res.json({ user });
 });
@@ -91,6 +94,18 @@ router.post('/reminder', requireTelegramAuth, async (req, res) => {
     res.json({ ok: true, remind_enabled: row.remind_enabled });
   } catch (err) {
     console.error('Reminder toggle failed:', err.message);
+    res.status(500).json({ error: 'Не удалось сохранить настройку' });
+  }
+});
+
+// POST /api/auth/notify { digest?, partners? } — итоги недели и сообщения о совместных пробежках
+router.post('/notify', requireTelegramAuth, async (req, res) => {
+  try {
+    const row = await setNotifyPrefs(req.telegramUser.id, { digest: req.body?.digest, partners: req.body?.partners });
+    if (!row) return res.status(404).json({ error: 'User not found' });
+    res.json({ ok: true, ...row });
+  } catch (err) {
+    console.error('Notify prefs failed:', err.message);
     res.status(500).json({ error: 'Не удалось сохранить настройку' });
   }
 });
@@ -314,6 +329,66 @@ router.delete('/starts/:id', requireTelegramAuth, async (req, res) => {
   } catch (err) {
     console.error('Start delete failed:', err.message);
     res.status(500).json({ error: 'Не удалось удалить старт' });
+  }
+});
+
+// ---------- Личные рекорды вручную (без записи старта) ----------
+// GET /api/auth/records
+router.get('/records', requireTelegramAuth, async (req, res) => {
+  try {
+    await socialReady;
+    const uid = await internalId(req.telegramUser.id);
+    if (!uid) return res.status(404).json({ error: 'User not found' });
+    const r = await query(
+      `SELECT id, discipline, result, note, to_char(date, 'YYYY-MM-DD') AS date FROM manual_records
+       WHERE user_id = $1 ORDER BY created_at`, [uid]);
+    res.json({ records: r.rows });
+  } catch (err) {
+    console.error('Records get failed:', err.message);
+    res.status(500).json({ error: 'Не удалось загрузить рекорды' });
+  }
+});
+
+// POST /api/auth/records { discipline, result, date?, note? }
+router.post('/records', requireTelegramAuth, async (req, res) => {
+  const b = req.body || {};
+  const discipline = textIn(b.discipline, 40);
+  const result = textIn(b.result, 20);
+  const date = DATE_RE.test(String(b.date || '')) && !Number.isNaN(Date.parse(b.date)) ? b.date : null;
+  if (!discipline) return res.status(400).json({ error: 'Укажи дисциплину' });
+  if (!result || !/\d/.test(result)) return res.status(400).json({ error: 'Укажи результат, например 4:05,1 или 6,45 м' });
+  if (date && date > new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10)) {
+    return res.status(400).json({ error: 'Дата рекорда не может быть в будущем' });
+  }
+  try {
+    await socialReady;
+    const uid = await internalId(req.telegramUser.id);
+    if (!uid) return res.status(404).json({ error: 'User not found' });
+    const cnt = await query('SELECT count(*)::int AS n FROM manual_records WHERE user_id = $1', [uid]);
+    if (cnt.rows[0].n >= 50) return res.status(400).json({ error: 'Слишком много рекордов' });
+    const r = await query(
+      `INSERT INTO manual_records (user_id, discipline, result, date, note) VALUES ($1, $2, $3, $4::date, $5)
+       RETURNING id, discipline, result, note, to_char(date, 'YYYY-MM-DD') AS date`,
+      [uid, discipline, result, date, textIn(b.note, 60)]);
+    res.json({ record: r.rows[0] });
+  } catch (err) {
+    console.error('Record save failed:', err.message);
+    res.status(500).json({ error: 'Не удалось сохранить рекорд' });
+  }
+});
+
+// DELETE /api/auth/records/:id
+router.delete('/records/:id', requireTelegramAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!(id > 0)) return res.status(400).json({ error: 'Неверный рекорд' });
+  try {
+    await socialReady;
+    const uid = await internalId(req.telegramUser.id);
+    await query('DELETE FROM manual_records WHERE id = $1 AND user_id = $2', [id, uid]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Record delete failed:', err.message);
+    res.status(500).json({ error: 'Не удалось удалить рекорд' });
   }
 });
 
