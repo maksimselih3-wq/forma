@@ -19,7 +19,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 // «Здоровье» принимает фото еды и бланков анализов — им нужен запас по размеру (подключаем раньше общего разбора)
-app.use('/api/health', express.json({ limit: '4mb' }), healthRoutes);
+app.use('/api/health', express.json({ limit: '10mb' }), healthRoutes);
 app.use(express.json());
 
 app.use('/api/auth', authRoutes);
