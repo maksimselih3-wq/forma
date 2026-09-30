@@ -190,10 +190,12 @@ router.get('/blood', async (req, res) => {
   res.json({ tests: r.rows.map(testOut) });
 });
 
+const PDF_RE = /^data:application\/pdf;base64,[A-Za-z0-9+/]+=*$/;
 router.post('/blood/scan', async (req, res) => {
   const image = req.body.image;
-  if (typeof image !== 'string' || !IMG_RE.test(image)) return res.status(400).json({ error: 'Нужно фото бланка' });
-  if (image.length > 3_500_000) return res.status(400).json({ error: 'Фото слишком большое' });
+  const isPdf = typeof image === 'string' && image.startsWith('data:application/pdf');
+  if (typeof image !== 'string' || !(isPdf ? PDF_RE.test(image) : IMG_RE.test(image))) return res.status(400).json({ error: 'Нужно фото или PDF бланка' });
+  if (image.length > (isPdf ? 8_500_000 : 3_500_000)) return res.status(400).json({ error: isPdf ? 'PDF слишком большой — до 6 МБ' : 'Фото слишком большое' });
   if (!scanAllowed(req.me.id, 'blood', 6)) return res.status(429).json({ error: 'На сегодня распознаваний бланков хватит — внеси показатели вручную' });
   try {
     const p = await scanBloodImage(image);
