@@ -21,6 +21,9 @@ const VOLUME_RULE = `Отрезки «по времени» (фартлек, в�
 Объём (километры, минуты, отрезки) считай по ВСЕМУ, что записано в тренировке: разминка, основная работа, заминка и заметки. Спортсмены часто пишут кросс или длительный бег (например «12 км, 55 мин») в разминку или заминку — это тоже часть объёма, учитывай его. Если цифры взяты из текста, а не из таблицы повторов, коротко скажи об этом. Не выдумывай то, чего в записях нет.
 Силовую работу и ОФП (упражнения с подходами, повторами и весом) учитывай отдельно от бегового объёма: это тоже нагрузка, особенно тяжёлые приседания, прыжки и плиометрика.`;
 
+// Время тренировки: когда была и сколько прошло с прошлой
+const TIME_RULE = `Если у тренировки указано время («время 18:00–19:30») — учитывай его: сколько часов прошло с конца прошлой тренировки (готовые цифры даны ниже, не пересчитывай) и в какое время суток спортсмену тренировки заходят лучше (по самочувствию и RPE). Отдых меньше ~12 часов после тяжёлой работы — повод отметить, что восстановиться могло не хватить; после лёгкой — это нормально. Если времени нет — не упоминай его и ничего не выдумывай.`;
+
 // Как читать пульс
 const PULSE_RULE = `Если указан пульс: «средний» и «максимальный» — за тренировку, «минимальный» — насколько низко пульс опускался в паузах отдыха между отрезками/подходами. Чем ниже пульс успевает опуститься в паузах, тем лучше восстановление. Сравнивай с прошлыми тренировками похожей работы: если в паузах пульс стал опускаться хуже (минимальный выше обычного) или максимальный выше при той же работе — это признак накопленной усталости. Если пульса нет — не упоминай его. Не ставь медицинских диагнозов.`;
 
@@ -79,6 +82,51 @@ const SPORTS_RU = {
 };
 const LEVELS_RU = { beginner: 'новичок', amateur: 'любитель', ranked: 'разрядник', kms: 'КМС', ms: 'МС и выше' };
 
+// ---------- Цели на месяц: прогресс для Fom ----------
+export async function goalsFacts(userId) {
+  const month = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 7);
+  const g = await query(`SELECT * FROM goals WHERE user_id = $1 AND month = $2 ORDER BY id`, [userId, month]);
+  if (!g.rows.length) return '';
+  const need = g.rows.some((x) => ['volume', 'count'].includes(x.kind));
+  const ws = need
+    ? (await query(`SELECT w.type, w.warmup, w.cooldown, w.competition,
+          COALESCE((SELECT json_agg(s.*) FROM workout_sets s WHERE s.workout_id = w.id), '[]') AS sets
+        FROM workouts w WHERE w.user_id = $1 AND to_char(w.date, 'YYYY-MM') = $2`, [userId, month])).rows
+    : [];
+  const km = Math.round(ws.reduce((a, w) => a + volumeKm(w), 0) * 10) / 10;
+  const cnt = ws.filter((w) => w.type === 'training').length;
+  let weightNow = null;
+  if (g.rows.some((x) => x.kind === 'weight')) {
+    const w = await query(`SELECT kg FROM weight_log WHERE user_id = $1 ORDER BY date DESC LIMIT 1`, [userId]);
+    weightNow = w.rows[0] ? Number(w.rows[0].kg) : null;
+  }
+  let best = [];
+  if (g.rows.some((x) => x.kind === 'pb')) {
+    const comps = await query(`SELECT id, date, competition FROM workouts WHERE user_id = $1 AND competition IS NOT NULL`, [userId]);
+    let manual = [];
+    try {
+      const m = await query(`SELECT id, discipline, result FROM manual_records WHERE user_id = $1`, [userId]);
+      manual = m.rows.map((x) => ({ id: `m${x.id}`, date: '1900-01-01', competition: { discipline: x.discipline, result: x.result } }));
+    } catch (e) { /* нет таблицы */ }
+    best = bestResults([...comps.rows, ...manual]);
+  }
+  const f = (n) => String(n).replace('.', ',');
+  const items = g.rows.map((x) => {
+    if (x.kind === 'volume') return `набегать ${f(Number(x.target_num))} км за месяц — сейчас ${f(km)} км`;
+    if (x.kind === 'count') return `${Number(x.target_num)} тренировок за месяц — сейчас ${cnt}`;
+    if (x.kind === 'pb') {
+      const b = best.find((r) => disciplineKey(r.discipline) === disciplineKey(x.discipline));
+      return `личный рекорд ${x.discipline}: цель ${x.target}${b ? `, сейчас лучший ${b.result}` : ', рекорда пока нет'}`;
+    }
+    if (x.kind === 'weight') {
+      const dir = x.start_num != null && Number(x.target_num) < Number(x.start_num) ? 'похудеть' : 'набрать вес (мышечную массу)';
+      return `${dir} до ${f(Number(x.target_num))} кг${x.start_num != null ? ` (в начале месяца ${f(Number(x.start_num))} кг)` : ''}${weightNow != null ? `, сейчас ${f(weightNow)} кг` : ''}`;
+    }
+    return `${x.title}${x.done ? ' — отмечена выполненной' : ''}`;
+  });
+  return `Цели на этот месяц (${month}), прогресс посчитан программой: ${items.join('; ')}. Когда уместно — связывай тренировки с этими целями: помогают ли они к ним идти. Питание и вес обсуждай бережно, без жёстких диет.`;
+}
+
 /**
  * Короткая справка о спортсмене для Fom: пол, возраст, рост, вес, пульс покоя, стаж, уровень,
  * вид спорта, рекорды, цель, травмы. Эти данные видит только сам спортсмен и Fom.
@@ -125,6 +173,11 @@ export async function athleteContext(userId) {
       const best = bestResults([...comps.rows, ...manual]);
       if (best.length) lines.push(`Личные рекорды (со стартов в дневнике и внесённые вручную): ${best.map((b) => `${b.discipline} — ${b.result}${b.date && b.date !== '1900-01-01' ? ` (${b.date})` : ''}`).join('; ')}`);
     } catch (e) { /* колонки ещё нет — не страшно */ }
+    // цели на месяц и как они идут (прогресс посчитан программой)
+    try {
+      const g = await goalsFacts(userId);
+      if (g) lines.push(g);
+    } catch (e) { /* таблицы ещё нет */ }
     // ближайшие старты из календаря
     try {
       const st = await query(
@@ -331,6 +384,57 @@ export function volumeFacts(workouts, today, { weeksBack = 3, month = true, last
 ${lines.join('\n')}`;
 }
 
+// ---------- Время тренировки ----------
+function minutesOf(t) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || ''));
+  return m ? +m[1] * 60 + +m[2] : null;
+}
+function durText(min) {
+  if (!(min > 0)) return '';
+  const h = Math.floor(min / 60), m = min % 60;
+  return h ? `${h} ч${m ? ` ${m} мин` : ''}` : `${m} мин`;
+}
+export function timeLabel(w) {
+  const a = minutesOf(w.start_time), b = minutesOf(w.end_time);
+  if (a == null) return '';
+  let len = b != null ? b - a : null;
+  if (len != null && len <= 0) len += 24 * 60; // закончилась после полуночи
+  return `${w.start_time}${b != null ? `–${w.end_time}` : ''}${len ? ` (${durText(len)})` : ''}`;
+}
+// Момент начала/конца тренировки в минутах от «эпохи» (дата + время); без времени — null
+function stamp(w, which) {
+  const t = minutesOf(which === 'end' ? (w.end_time || w.start_time) : w.start_time);
+  if (t == null) return null;
+  return Math.round(Date.parse(String(w.date).slice(0, 10) + 'T00:00:00Z') / 60000) + t;
+}
+// Сколько часов отдыха было между прошлой тренировкой и этой (если у обеих есть время)
+export function restGapText(workout, previous) {
+  const prev = (previous || []).find((w) => w.type === 'training');
+  if (!prev) return '';
+  const a = stamp(prev, 'end'), b = stamp(workout, 'start');
+  if (a == null || b == null || b <= a) {
+    const days = Math.round((Date.parse(String(workout.date).slice(0, 10)) - Date.parse(String(prev.date).slice(0, 10))) / 86400000);
+    return days > 0 ? `С прошлой тренировки (${String(prev.date).slice(0, 10)}) прошло ${days} дн. (точное время не указано).` : '';
+  }
+  const h = Math.round((b - a) / 6) / 10;
+  return `Отдых с конца прошлой тренировки (${String(prev.date).slice(0, 10)}${prev.end_time ? ' до ' + prev.end_time : ''}, RPE ${prev.rpe ?? '-'}) до начала этой — ${String(h).replace('.', ',')} ч.`;
+}
+// В какое время суток тренировки заходят лучше: среднее самочувствие и RPE по утру / дню / вечеру
+export function timeOfDayFacts(workouts) {
+  const buckets = { 'утро (до 12:00)': [], 'день (12–17)': [], 'вечер (после 17:00)': [] };
+  for (const w of workouts || []) {
+    if (w.type !== 'training') continue;
+    const t = minutesOf(w.start_time);
+    if (t == null) continue;
+    const k = t < 720 ? 'утро (до 12:00)' : t < 1020 ? 'день (12–17)' : 'вечер (после 17:00)';
+    buckets[k].push(w);
+  }
+  const avg = (arr) => { const v = arr.filter((x) => x > 0); return v.length ? (v.reduce((a, b) => a + b, 0) / v.length).toFixed(1).replace('.', ',') : '-'; };
+  const lines = Object.entries(buckets).filter(([, l]) => l.length)
+    .map(([k, l]) => `${k}: ${l.length} трен., самочувствие в среднем ${avg(l.map((w) => Number(w.feeling)))}/10, RPE ${avg(l.map((w) => Number(w.rpe)))}/10`);
+  return lines.length ? `Время тренировок (посчитано программой): ${lines.join('; ')}.` : '';
+}
+
 /**
  * Полное описание одной записи для ИИ: дата, день недели, разминка, повторы, заминка, RPE, самочувствие, заметка.
  * Используется и в отзыве после тренировки, и в разборе нагрузки, и в чате.
@@ -348,6 +452,8 @@ export function describeWorkout(w) {
   if (c && (c.discipline || c.result)) {
     parts.push(`СТАРТ${c.name ? ` «${c.name}»` : ''}: ${[c.discipline, c.result && `результат ${c.result}`, c.place && `${c.place} место`].filter(Boolean).join(', ')}`);
   }
+  const tl = timeLabel(w);
+  if (tl) parts.push(`время ${tl}`);
   if (w.warmup) parts.push(`разминка: ${w.warmup}`);
   const sets = (Array.isArray(w.sets) ? w.sets : []).map(formatSet).filter(Boolean);
   if (sets.length) parts.push(`беговая работа: ${sets.join('; ')}`);
@@ -407,6 +513,9 @@ export async function getPeriodInsight(workouts, period, athlete = '') {
 ${summary || 'записей нет'}
 
 Беговой объём за этот период (посчитан программой точно так же, как в приложении — бери это число и НЕ пересчитывай): ${kmFmt(workouts.reduce((a, w) => a + volumeKm(w), 0))} км. Минуты «по времени» и ОФП сюда не входят.
+${timeOfDayFacts(workouts)}
+
+${TIME_RULE}
 
 ${VOLUME_RULE}
 
@@ -455,6 +564,10 @@ ${COMP_RULE}
 
 ${volumeFacts(workouts, today)}
 
+${timeOfDayFacts(workouts)}
+
+${TIME_RULE}
+
 Записи тренировок за последние 30 дней:
 ${contextSummary || 'записей нет'}
 
@@ -487,6 +600,8 @@ ${describeWorkout({ ...workout, type: 'training' })}
 
 Предыдущие дни для контекста:
 ${recentSummary || 'данных нет'}
+${restGapText(workout, recentWorkouts)}
+${timeOfDayFacts([workout, ...recentWorkouts])}
 ${similar ? `\nПохожая тренировка раньше (та же основная работа):\n${describeWorkout(similar)}\nКоротко сравни с ней: время отрезков, пульс, RPE — стало лучше или хуже.\n` : ''}
 ${VOLUME_RULE}
 
@@ -495,6 +610,8 @@ ${PULSE_RULE}
 ${PACE_RULE}
 
 ${COMP_RULE}
+
+${TIME_RULE}
 
 Дай ответ в 3-4 коротких предложения на русском:
 1. Оценка этой тренировки в контексте предыдущих дней (хорошо выполнена / есть признаки перебора).
@@ -526,7 +643,9 @@ export async function parseWorkoutText(text) {
   "hr_avg": число или null,
   "hr_max": число или null,
   "hr_min": число или null,
-  "notes": строка или null
+  "notes": строка или null,
+  "start_time": "ЧЧ:ММ" или null,
+  "end_time": "ЧЧ:ММ" или null
 }
 
 Правила:
@@ -538,6 +657,7 @@ export async function parseWorkoutText(text) {
 - Кросс, лёгкий бег, СБУ, суставная перед работой → "warmup" коротким текстом (например «3 км трусцой + СБУ»). После работы → "cooldown".
 - Если тренировка — только длительный бег/кросс без отрезков, запиши его в "warmup" (например «кросс 12 км, 55 мин»), а "sets" оставь пустым.
 - Силовая, ОФП, прыжки, барьеры, пресс, планка → "exercises". Вес — только число в кг, если указан («80»), или «свой вес». Повторы строкой («10», «30 сек», «по 5 на ногу»).
+- "start_time"/"end_time" — во сколько была тренировка, если сказано: «в 18:00» → start_time "18:00"; «с 10 до 12» → "10:00" и "12:00"; «утром в 7» → "07:00". Не сказано — null.
 - "rpe" — насколько тяжело: если есть число — бери его; если словами: «легко» ≈ 3, «средне/нормально» ≈ 5, «тяжело» ≈ 8, «на пределе/убился» ≈ 9–10. Не упомянуто — null.
 - "feeling" — самочувствие: «отлично/бодро» ≈ 9, «хорошо» ≈ 7, «так себе» ≈ 5, «плохо/разбит» ≈ 3. Не упомянуто — null.
 - Пульс: «ср 150», «средний 150» → hr_avg; «макс 182» → hr_max; «в паузах падал до 110», «мин 110» → hr_min.
