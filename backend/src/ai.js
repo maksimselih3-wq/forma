@@ -25,6 +25,8 @@ const VOLUME_RULE = `Отрезки «по времени» (фартлек, в�
 const TIME_RULE = `Если у тренировки указано время («время 18:00–19:30») — учитывай его: сколько часов прошло с конца прошлой тренировки (готовые цифры даны ниже, не пересчитывай) и в какое время суток спортсмену тренировки заходят лучше (по самочувствию и RPE). Отдых меньше ~12 часов после тяжёлой работы — повод отметить, что восстановиться могло не хватить; после лёгкой — это нормально. Если времени нет — не упоминай его и ничего не выдумывай.`;
 
 // Как читать пульс
+const ALT_RULE = `Если у тренировки указано место и высота («место: … высота ≈ 1240 м», «СБОР») — учитывай высоту. Примерно с 1000–1200 м и выше в первые 3–7 дней обычно выше пульс (и в покое, и на работе), тяжелее RPE и медленнее темп при той же нагрузке, хуже сон — это адаптация к высоте, а не спад формы; сравнивай такие тренировки между собой, а не с равниной. После возвращения со среднегорья отметь, как изменились результаты, но без обещаний. Дни на высоте уже посчитаны программой (ниже), не пересчитывай. Если места нет — не упоминай его и ничего не выдумывай.`;
+
 const PULSE_RULE = `Если указан пульс: «средний» и «максимальный» — за тренировку, «минимальный» — насколько низко пульс опускался в паузах отдыха между отрезками/подходами. Чем ниже пульс успевает опуститься в паузах, тем лучше восстановление. Сравнивай с прошлыми тренировками похожей работы: если в паузах пульс стал опускаться хуже (минимальный выше обычного) или максимальный выше при той же работе — это признак накопленной усталости. Если пульса нет — не упоминай его. Не ставь медицинских диагнозов.`;
 
 // Темп бега: только для средних и длинных дистанций
@@ -435,6 +437,50 @@ export function timeOfDayFacts(workouts) {
   return lines.length ? `Время тренировок (посчитано программой): ${lines.join('; ')}.` : '';
 }
 
+// Высота: какой по счёту день на высоте (от 1000 м) или сколько дней назад спустился.
+// workout — текущая запись, previous — предыдущие записи (новые сначала).
+export function altitudeFacts(workout, previous) {
+  const HIGH = 1000;
+  const high = (w) => w && w.type !== 'rest' && Number(w.altitude_m) >= HIGH;
+  const day = (w) => String(w.date).slice(0, 10);
+  const diff = (a, b) => Math.round((Date.parse(a) - Date.parse(b)) / 86400000);
+  const prev = (previous || []).filter((w) => w.type === 'training');
+  if (high(workout)) {
+    let first = day(workout);
+    for (const w of prev) {
+      if (!high(w) || diff(first, day(w)) > 3) break; // пропуск больше 3 дней — значит, был перерыв
+      first = day(w);
+    }
+    const n = diff(day(workout), first) + 1;
+    return `Высота (посчитано программой): тренировка на ≈${workout.altitude_m} м — ${n}-й день на высоте (первая запись на высоте ${first}).`;
+  }
+  const lastHigh = prev.find(high);
+  if (lastHigh) {
+    const ago = diff(day(workout), day(lastHigh));
+    if (ago > 0 && ago <= 28) return `Высота (посчитано программой): спустился с высоты ≈${lastHigh.altitude_m} м (${lastHigh.place || 'сбор'}) ${ago} дн. назад.`;
+  }
+  return '';
+}
+
+// Коротко, что было на тренировке: «5×1000 по 3:05», «кросс 12 км», «старт 800 м — 2:05,3»
+export function shortWorkout(w) {
+  if (!w) return '';
+  if (w.type === 'rest') return 'отдых';
+  const c = w.competition;
+  if (c && (c.discipline || c.result)) return `старт ${[c.discipline, c.result].filter(Boolean).join(' — ')}`;
+  const sets = (Array.isArray(w.sets) ? w.sets : []).filter((x) => x.distance_m || x.duration_s);
+  if (sets.length) {
+    const x = sets[0];
+    const what = x.duration_s ? durLabel(x.duration_s) : x.distance_m >= 1000 && x.distance_m % 100 === 0 ? `${String(x.distance_m / 1000).replace('.', ',')} км` : `${x.distance_m}`;
+    const one = `${x.reps > 1 ? x.reps + '×' : ''}${what}${x.time_or_pace ? ' по ' + x.time_or_pace : ''}`;
+    return sets.length > 1 ? `${one} + ещё ${sets.length - 1}` : one;
+  }
+  const t = String(w.warmup || w.notes || '').trim().split('\n')[0];
+  if (t) return t.length > 40 ? t.slice(0, 38) + '…' : t;
+  if ((w.exercises || []).length) return 'ОФП / силовая';
+  return 'тренировка';
+}
+
 /**
  * Полное описание одной записи для ИИ: дата, день недели, разминка, повторы, заминка, RPE, самочувствие, заметка.
  * Используется и в отзыве после тренировки, и в разборе нагрузки, и в чате.
@@ -454,6 +500,7 @@ export function describeWorkout(w) {
   }
   const tl = timeLabel(w);
   if (tl) parts.push(`время ${tl}`);
+  if (w.place || w.altitude_m != null) parts.push(`место: ${w.place || 'не указано'}${w.altitude_m != null ? `, высота ≈ ${w.altitude_m} м` : ''}${w.camp ? ', СБОР' : ''}`);
   if (w.warmup) parts.push(`разминка: ${w.warmup}`);
   const sets = (Array.isArray(w.sets) ? w.sets : []).map(formatSet).filter(Boolean);
   if (sets.length) parts.push(`беговая работа: ${sets.join('; ')}`);
@@ -517,6 +564,8 @@ ${timeOfDayFacts(workouts)}
 
 ${TIME_RULE}
 
+${ALT_RULE}
+
 ${VOLUME_RULE}
 
 ${PULSE_RULE}
@@ -568,6 +617,8 @@ ${timeOfDayFacts(workouts)}
 
 ${TIME_RULE}
 
+${ALT_RULE}
+
 Записи тренировок за последние 30 дней:
 ${contextSummary || 'записей нет'}
 
@@ -602,6 +653,7 @@ ${describeWorkout({ ...workout, type: 'training' })}
 ${recentSummary || 'данных нет'}
 ${restGapText(workout, recentWorkouts)}
 ${timeOfDayFacts([workout, ...recentWorkouts])}
+${altitudeFacts(workout, recentWorkouts)}
 ${similar ? `\nПохожая тренировка раньше (та же основная работа):\n${describeWorkout(similar)}\nКоротко сравни с ней: время отрезков, пульс, RPE — стало лучше или хуже.\n` : ''}
 ${VOLUME_RULE}
 
@@ -612,6 +664,8 @@ ${PACE_RULE}
 ${COMP_RULE}
 
 ${TIME_RULE}
+
+${ALT_RULE}
 
 Дай ответ в 3-4 коротких предложения на русском:
 1. Оценка этой тренировки в контексте предыдущих дней (хорошо выполнена / есть признаки перебора).
@@ -645,7 +699,8 @@ export async function parseWorkoutText(text) {
   "hr_min": число или null,
   "notes": строка или null,
   "start_time": "ЧЧ:ММ" или null,
-  "end_time": "ЧЧ:ММ" или null
+  "end_time": "ЧЧ:ММ" или null,
+  "place": строка или null
 }
 
 Правила:
@@ -658,6 +713,7 @@ export async function parseWorkoutText(text) {
 - Если тренировка — только длительный бег/кросс без отрезков, запиши его в "warmup" (например «кросс 12 км, 55 мин»), а "sets" оставь пустым.
 - Силовая, ОФП, прыжки, барьеры, пресс, планка → "exercises". Вес — только число в кг, если указан («80»), или «свой вес». Повторы строкой («10», «30 сек», «по 5 на ногу»).
 - "start_time"/"end_time" — во сколько была тренировка, если сказано: «в 18:00» → start_time "18:00"; «с 10 до 12» → "10:00" и "12:00"; «утром в 7» → "07:00". Не сказано — null.
+- "place" — где была тренировка, если сказано: «в манеже» → "Манеж"; «на стадионе Лужники» → "Лужники"; «сбор в Кисловодске» → "Кисловодск". Коротко, с большой буквы. Не сказано — null.
 - "rpe" — насколько тяжело: если есть число — бери его; если словами: «легко» ≈ 3, «средне/нормально» ≈ 5, «тяжело» ≈ 8, «на пределе/убился» ≈ 9–10. Не упомянуто — null.
 - "feeling" — самочувствие: «отлично/бодро» ≈ 9, «хорошо» ≈ 7, «так себе» ≈ 5, «плохо/разбит» ≈ 3. Не упомянуто — null.
 - Пульс: «ср 150», «средний 150» → hr_avg; «макс 182» → hr_max; «в паузах падал до 110», «мин 110» → hr_min.
@@ -720,4 +776,56 @@ export function workSignature(sets) {
     .filter((x) => x.distance_m || x.duration_s)
     .map((x) => (x.duration_s ? `${x.duration_s}sx${x.reps || 1}` : `${x.distance_m}x${x.reps || 1}`));
   return parts.length ? parts.join('+') : null;
+}
+
+/**
+ * Для тренера: короткий вывод по одному спортсмену (3–4 предложения).
+ * facts — цифры, посчитанные программой; workouts — записи за 2 недели.
+ */
+export async function getCoachAthleteSummary(name, facts, workouts, athlete = '') {
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
+Сейчас ты пишешь не спортсмену, а его ТРЕНЕРУ — коротко, как ассистент тренера. Спортсмен: ${name}.
+
+Цифры (посчитаны программой, бери их, не пересчитывай):
+${facts}
+
+Записи за последние 2 недели (новые сверху):
+${workouts.map(describeWorkout).join('\n') || 'записей нет'}
+
+${VOLUME_RULE}
+
+${PULSE_RULE}
+
+${TIME_RULE}
+
+${ALT_RULE}
+
+Напиши тренеру 3–4 коротких предложения на русском, без заголовков и markdown:
+- что главное произошло за неделю (объём, интенсивность, самочувствие, сон, высота — только то, что есть в данных);
+- есть ли признаки перегруза или недовосстановления, с конкретными цифрами и днями;
+- о чём стоит поговорить со спортсменом (1 пункт).
+Не составляй план и не давай указаний, как тренировать — решает тренер. Никаких диагнозов. Не выдумывай цифры.`;
+  return callClaude({ model: MODEL, maxTokens: 350, messages: [{ role: 'user', content: prompt }] });
+}
+
+/**
+ * Для тренера: сводка недели по всей группе. lines — по строке фактов на спортсмена.
+ */
+export async function getCoachTeamDigest(groupName, weekLabel, lines, totals) {
+  const prompt = `${FOM_INTRO}
+Сейчас ты пишешь ТРЕНЕРУ группы «${groupName}» сводку по его спортсменам за ${weekLabel}.
+
+Итого по группе (посчитано программой): ${totals}
+
+По спортсменам (посчитано программой; «флаги» — автоматические пометки):
+${lines.join('\n') || 'данных нет'}
+
+${ALT_RULE}
+
+Формат — короткое сообщение без markdown-звёздочек, 3 блока, каждый с новой строки и эмодзи в начале:
+⚠️ Обратить внимание — 1–4 спортсмена с конкретной причиной в цифрах (или «никого, неделя ровная»);
+✅ Хорошее — рекорды, стабильность, прогресс (если есть);
+🏔 На сборе — только если кто-то тренируется на высоте.
+Каждый пункт — одна строка: «Имя — причина». Без плана и указаний, как тренировать. Не выдумывай ничего сверх данных.`;
+  return callClaude({ model: MODEL, maxTokens: 500, messages: [{ role: 'user', content: prompt }] });
 }
