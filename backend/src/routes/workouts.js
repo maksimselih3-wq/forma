@@ -35,6 +35,9 @@ const schemaReady = (async () => {
     await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS competition JSONB`);
     // отрезок по времени (фартлек, вставки): длительность в секундах вместо метров
     await query(`ALTER TABLE workout_sets ADD COLUMN IF NOT EXISTS duration_s INT`);
+    // время тренировки: с какого по какое («18:00»–«19:30»)
+    await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS start_time TEXT`);
+    await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS end_time TEXT`);
     console.log('Workouts schema OK (вторая тренировка)');
   } catch (err) {
     console.error('Workouts migration failed:', err.message);
@@ -103,6 +106,67 @@ function cleanExercises(list) {
 }
 
 // Сохранить беговые повторы и упражнения записи (старые удаляем, новые вставляем)
+// «7:05», «19:30» → «07:05»; всё прочее — null
+function cleanTime(v) {
+  const m = /^(\d{1,2})[:.](\d{2})$/.exec(String(v ?? '').trim());
+  if (!m) return null;
+  const h = +m[1], mi = +m[2];
+  return h < 24 && mi < 60 ? `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}` : null;
+}
+
+// Всё, от чего зависит отзыв Fom: если это поменялось при редактировании — отзыв пишем заново
+function contentKey(w) {
+  if (!w) return '';
+  const comp = typeof w.competition === 'string' ? w.competition : JSON.stringify(w.competition || null);
+  return JSON.stringify([
+    w.type, w.warmup, w.cooldown, w.feeling, w.rpe, w.notes, w.hr_avg, w.hr_max, w.hr_min, comp, w.start_time, w.end_time,
+    (w.sets || []).map((x) => [x.distance_m, x.duration_s, x.reps, x.time_or_pace, x.rest_between]),
+    (w.exercises || []).map((x) => [x.name, x.sets, x.reps, x.weight]),
+  ]);
+}
+async function loadWorkout(id) {
+  const r = await query(`${WORKOUT_SELECT} WHERE w.id = $1`, [id]);
+  return r.rows[0] || null;
+}
+
+// Отзыв Fom по сохранённой записи: 7 предыдущих записей, похожая тренировка за 4 месяца, анкета.
+// Пишет отзыв в базу и возвращает его (или null, если Fom недоступен).
+async function buildFeedback(userId, workoutId, today) {
+  const w = await loadWorkout(workoutId);
+  if (!w || w.type !== 'training') return null;
+  const date = String(w.date).slice(0, 10);
+  const recentRes = await query(
+    `${WORKOUT_SELECT} WHERE w.user_id = $1 AND (w.date < $2 OR (w.date = $2 AND w.session < $3))
+     ORDER BY w.date DESC, w.session DESC LIMIT 7`,
+    [userId, date, w.session || 1]
+  );
+  let similar = null;
+  const sig = workSignature(w.sets);
+  if (sig) {
+    try {
+      const prev = await query(
+        `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.id <> $2 AND w.type = 'training' AND w.date >= $3::date - 120
+         AND w.date <= $3::date ORDER BY w.date DESC LIMIT 60`,
+        [userId, w.id, date]
+      );
+      similar = prev.rows.find((x) => workSignature(x.sets) === sig) || null;
+    } catch (e) { /* не страшно */ }
+  }
+  try {
+    const text = await getWorkoutFeedback(
+      { ...w, date, isBackdated: date !== today },
+      recentRes.rows,
+      await athleteContext(userId),
+      similar
+    );
+    await query('UPDATE workouts SET ai_feedback = $1 WHERE id = $2', [text, w.id]);
+    return text;
+  } catch (err) {
+    console.error('AI feedback failed:', err.message);
+    return null;
+  }
+}
+
 // Кому видна запись: 'private' — только мне, 'public' — всем друзьям, 'custom' — выбранным друзьям
 function cleanVisibility(v) {
   return v === 'public' || v === 'custom' ? v : 'private';
@@ -193,6 +257,8 @@ router.post('/parse', requireTelegramAuth, async (req, res) => {
       warmup: txt(p.warmup, 500),
       cooldown: txt(p.cooldown, 500),
       notes: txt(p.notes, 1000),
+      start_time: cleanTime(p.start_time),
+      end_time: cleanTime(p.end_time),
       rpe: num(p.rpe, 1, 10),
       feeling: num(p.feeling, 1, 10),
       hr_avg: hr(p.hr_avg),
@@ -295,6 +361,10 @@ router.post('/', requireTelegramAuth, async (req, res) => {
 
     await saveChildren(client, workout.id, sets, exercises);
     const visibleTo = await saveVisibleTo(client, workout.id, user.id, workout.visibility, req.body.visible_to);
+    const startTime = isTraining ? cleanTime(req.body.start_time) : null;
+    const endTime = isTraining ? cleanTime(req.body.end_time) : null;
+    await client.query('UPDATE workouts SET start_time = $1, end_time = $2 WHERE id = $3', [startTime, endTime, workout.id]);
+    workout.start_time = startTime; workout.end_time = endTime;
 
     await client.query('COMMIT');
     if (workout.visibility === 'custom') workout.visible_to = visibleTo;
@@ -303,44 +373,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     const streak = await recalcStreak(user.id, today);
 
     // ИИ-фидбек от Fom — только для тренировок, не для дней отдыха
-    let aiFeedback = null;
-    if (isTraining) {
-      // 7 предыдущих записей целиком — чтобы Fom видел реальную картину
-      // 7 предыдущих записей + первая тренировка этого же дня, если сейчас вторая
-      const recentRes = await query(
-        `${WORKOUT_SELECT} WHERE w.user_id = $1 AND (w.date < $2 OR (w.date = $2 AND w.session < $3))
-         ORDER BY w.date DESC, w.session DESC LIMIT 7`,
-        [user.id, date, session]
-      );
-      // похожая тренировка за последние 4 месяца (та же основная работа, например 6×400)
-      let similar = null;
-      const sig = workSignature(sets.map((x) => {
-        const dur = parseDuration(x.duration_s) || (looksLikeDuration(x.distance_m) ? parseDuration(x.distance_m) : null);
-        return { ...x, duration_s: dur, distance_m: dur ? null : parseDistance(x.distance_m), reps: parseInt(x.reps, 10) || null };
-      }));
-      if (sig) {
-        try {
-          const prev = await query(
-            `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.id <> $2 AND w.type = 'training' AND w.date >= $3::date - 120
-             AND w.date <= $3::date ORDER BY w.date DESC LIMIT 60`,
-            [user.id, workout.id, date]
-          );
-          similar = prev.rows.find((x) => workSignature(x.sets) === sig) || null;
-        } catch (e) { /* не страшно */ }
-      }
-      try {
-        aiFeedback = await getWorkoutFeedback(
-          { date, session, type, warmup, cooldown, sets, exercises, rpe, feeling, notes, hr_avg: hrAvg, hr_max: hrMax, hr_min: hrMin, competition, isBackdated: date !== today },
-          recentRes.rows,
-          await athleteContext(user.id),
-          similar
-        );
-        await query('UPDATE workouts SET ai_feedback = $1 WHERE id = $2', [aiFeedback, workout.id]);
-      } catch (err) {
-        console.error('AI feedback failed:', err.message);
-        // не роняем весь запрос, если ИИ недоступен
-      }
-    }
+    const aiFeedback = isTraining ? await buildFeedback(user.id, workout.id, today) : null;
 
     res.json({ workout: { ...workout, sets, exercises, ai_feedback: aiFeedback }, streak });
   } catch (err) {
@@ -391,6 +424,7 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
 
   await schemaReady;
   await socialReady;
+  const before = await query(`${WORKOUT_SELECT} WHERE w.id = $1 AND w.user_id = $2`, [req.params.id, user.id]);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -409,9 +443,19 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
 
     await saveChildren(client, req.params.id, sets, exercises);
     const visibleTo = await saveVisibleTo(client, updated.rows[0].id, user.id, updated.rows[0].visibility, req.body.visible_to);
+    const startTime = isTraining ? cleanTime(req.body.start_time) : null;
+    const endTime = isTraining ? cleanTime(req.body.end_time) : null;
+    await client.query('UPDATE workouts SET start_time = $1, end_time = $2 WHERE id = $3', [startTime, endTime, updated.rows[0].id]);
 
     await client.query('COMMIT');
-    res.json({ workout: { ...updated.rows[0], sets, exercises, ...(updated.rows[0].visibility === 'custom' ? { visible_to: visibleTo } : {}) } });
+
+    // Запись изменили (добавили отрезки, поправили пульс…) — Fom пишет отзыв заново
+    const after = await loadWorkout(updated.rows[0].id);
+    let aiFeedback = after?.ai_feedback ?? null;
+    if (isTraining && contentKey(before.rows[0]) !== contentKey(after)) {
+      aiFeedback = (await buildFeedback(user.id, updated.rows[0].id, getClientToday(req))) ?? aiFeedback;
+    }
+    res.json({ workout: { ...(after || updated.rows[0]), ai_feedback: aiFeedback, ...(updated.rows[0].visibility === 'custom' ? { visible_to: visibleTo } : {}) } });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
