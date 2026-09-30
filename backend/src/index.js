@@ -12,11 +12,14 @@ import assetRoutes from './routes/asset.js';
 import partnerRoutes from './routes/partners.js';
 import coachRoutes from './routes/coach.js';
 import geoRoutes from './routes/geo.js';
+import healthRoutes from './routes/health.js';
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
+// «Здоровье» принимает фото еды и бланков анализов — им нужен запас по размеру (подключаем раньше общего разбора)
+app.use('/api/health', express.json({ limit: '4mb' }), healthRoutes);
 app.use(express.json());
 
 app.use('/api/auth', authRoutes);
