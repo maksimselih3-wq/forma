@@ -478,10 +478,14 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
     // Запись изменили (добавили отрезки, поправили пульс…) — Fom пишет отзыв заново
     const after = await loadWorkout(updated.rows[0].id);
     let aiFeedback = after?.ai_feedback ?? null;
-    if (isTraining && contentKey(before.rows[0]) !== contentKey(after)) {
-      aiFeedback = (await buildFeedback(user.id, updated.rows[0].id, getClientToday(req))) ?? aiFeedback;
+    // 'updated' — Fom написал новый отзыв; 'same' — содержание не менялось; 'failed' — Fom не ответил
+    let feedbackStatus = 'same';
+    if (isTraining && (contentKey(before.rows[0]) !== contentKey(after) || !aiFeedback)) {
+      const fresh = await buildFeedback(user.id, updated.rows[0].id, getClientToday(req));
+      feedbackStatus = fresh ? 'updated' : 'failed';
+      if (fresh) aiFeedback = fresh;
     }
-    res.json({ workout: { ...(after || updated.rows[0]), ai_feedback: aiFeedback, ...(updated.rows[0].visibility === 'custom' ? { visible_to: visibleTo } : {}) } });
+    res.json({ workout: { ...(after || updated.rows[0]), ai_feedback: aiFeedback, ...(updated.rows[0].visibility === 'custom' ? { visible_to: visibleTo } : {}) }, feedback_status: feedbackStatus });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
@@ -489,6 +493,19 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
   } finally {
     client.release();
   }
+});
+
+// POST /api/workouts/:id/feedback — попросить Fom написать отзыв заново (кнопка «Обновить отзыв»)
+router.post('/:id/feedback', requireTelegramAuth, async (req, res) => {
+  const user = await getInternalUser(req.telegramUser.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  await schemaReady;
+  const w = await query('SELECT id, type FROM workouts WHERE id = $1 AND user_id = $2', [parseInt(req.params.id, 10) || 0, user.id]);
+  if (!w.rows[0]) return res.status(404).json({ error: 'Запись не найдена' });
+  if (w.rows[0].type !== 'training') return res.status(400).json({ error: 'Отзыв бывает только к тренировке' });
+  const text = await buildFeedback(user.id, w.rows[0].id, getClientToday(req));
+  if (!text) return res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
+  res.json({ ai_feedback: text });
 });
 
 // DELETE /api/workouts/:id — после удаления серия пересчитывается
