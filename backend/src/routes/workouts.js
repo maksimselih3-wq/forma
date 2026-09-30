@@ -38,6 +38,12 @@ const schemaReady = (async () => {
     // время тренировки: с какого по какое («18:00»–«19:30»)
     await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS start_time TEXT`);
     await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS end_time TEXT`);
+    // где была тренировка: название, координаты, высота над уровнем моря, сбор или нет
+    await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS place TEXT`);
+    await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS place_lat DOUBLE PRECISION`);
+    await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS place_lon DOUBLE PRECISION`);
+    await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS altitude_m INT`);
+    await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS camp BOOLEAN NOT NULL DEFAULT FALSE`);
     console.log('Workouts schema OK (вторая тренировка)');
   } catch (err) {
     console.error('Workouts migration failed:', err.message);
@@ -114,12 +120,27 @@ function cleanTime(v) {
   return h < 24 && mi < 60 ? `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}` : null;
 }
 
+// Место тренировки из формы: { place, place_lat, place_lon, altitude_m, camp }
+function cleanPlace(b, isTraining) {
+  if (!isTraining) return { place: null, lat: null, lon: null, alt: null, camp: false };
+  const place = txt(b.place, 80);
+  const lat = Number(b.place_lat), lon = Number(b.place_lon);
+  const okGeo = place && Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && (lat || lon);
+  const altN = parseInt(b.altitude_m, 10);
+  const alt = Number.isFinite(altN) && altN >= -500 && altN <= 6000 ? altN : null;
+  return { place, lat: okGeo ? lat : null, lon: okGeo ? lon : null, alt, camp: !!b.camp };
+}
+async function savePlace(client, id, p) {
+  await client.query('UPDATE workouts SET place = $1, place_lat = $2, place_lon = $3, altitude_m = $4, camp = $5 WHERE id = $6',
+    [p.place, p.lat, p.lon, p.alt, p.camp, id]);
+}
+
 // Всё, от чего зависит отзыв Fom: если это поменялось при редактировании — отзыв пишем заново
 function contentKey(w) {
   if (!w) return '';
   const comp = typeof w.competition === 'string' ? w.competition : JSON.stringify(w.competition || null);
   return JSON.stringify([
-    w.type, w.warmup, w.cooldown, w.feeling, w.rpe, w.notes, w.hr_avg, w.hr_max, w.hr_min, comp, w.start_time, w.end_time,
+    w.type, w.warmup, w.cooldown, w.feeling, w.rpe, w.notes, w.hr_avg, w.hr_max, w.hr_min, comp, w.start_time, w.end_time, w.place, w.altitude_m, !!w.camp,
     (w.sets || []).map((x) => [x.distance_m, x.duration_s, x.reps, x.time_or_pace, x.rest_between]),
     (w.exercises || []).map((x) => [x.name, x.sets, x.reps, x.weight]),
   ]);
@@ -259,6 +280,7 @@ router.post('/parse', requireTelegramAuth, async (req, res) => {
       notes: txt(p.notes, 1000),
       start_time: cleanTime(p.start_time),
       end_time: cleanTime(p.end_time),
+      place: txt(p.place, 80),
       rpe: num(p.rpe, 1, 10),
       feeling: num(p.feeling, 1, 10),
       hr_avg: hr(p.hr_avg),
@@ -365,6 +387,9 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     const endTime = isTraining ? cleanTime(req.body.end_time) : null;
     await client.query('UPDATE workouts SET start_time = $1, end_time = $2 WHERE id = $3', [startTime, endTime, workout.id]);
     workout.start_time = startTime; workout.end_time = endTime;
+    const place = cleanPlace(req.body, isTraining);
+    await savePlace(client, workout.id, place);
+    Object.assign(workout, { place: place.place, place_lat: place.lat, place_lon: place.lon, altitude_m: place.alt, camp: place.camp });
 
     await client.query('COMMIT');
     if (workout.visibility === 'custom') workout.visible_to = visibleTo;
@@ -446,6 +471,7 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
     const startTime = isTraining ? cleanTime(req.body.start_time) : null;
     const endTime = isTraining ? cleanTime(req.body.end_time) : null;
     await client.query('UPDATE workouts SET start_time = $1, end_time = $2 WHERE id = $3', [startTime, endTime, updated.rows[0].id]);
+    await savePlace(client, updated.rows[0].id, cleanPlace(req.body, isTraining));
 
     await client.query('COMMIT');
 
