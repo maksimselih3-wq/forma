@@ -362,6 +362,15 @@ router.post('/settings', async (req, res) => {
 //  РЕАКЦИИ И КОММЕНТАРИИ
 // ===================================================================
 
+// GET /api/friends/workouts/:id — одна чужая тренировка (день в календаре друга), если она мне открыта
+router.get('/workouts/:id', async (req, res) => {
+  const w = await getVisibleWorkout(req.me.id, req.params.id);
+  if (!w) return res.status(404).json({ error: 'Тренировка закрыта или удалена' });
+  const r = await query(`${WORKOUT_SELECT} WHERE w.id = $1`, [w.id]);
+  const [item] = await withSocial(r.rows, req.me.id);
+  res.json({ workout: item });
+});
+
 // GET /api/friends/workouts/:id/social — кто как отреагировал + все комментарии
 router.get('/workouts/:id/social', async (req, res) => {
   const w = await getVisibleWorkout(req.me.id, req.params.id);
