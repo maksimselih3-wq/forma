@@ -1,5 +1,6 @@
 import { query, dbReady, WORKOUT_SELECT } from './db.js';
 import { getWeeklyDigest, athleteContext } from './ai.js';
+import { sendCoachDigests } from './routes/coach.js';
 
 /**
  * Вечернее напоминание от бота.
@@ -178,6 +179,7 @@ export function startReminderScheduler(send) {
   const check = () => {
     sendReminders(send).catch((err) => console.error('Reminders failed:', err.message));
     sendWeeklyDigests(send).catch((err) => console.error('Digest failed:', err.message));
+    sendCoachDigests(send).catch((err) => console.error('Coach digest failed:', err.message));
   };
   setTimeout(check, 20000);
   setInterval(check, 5 * 60 * 1000); // раз в 5 минут проверяем, не пора ли
