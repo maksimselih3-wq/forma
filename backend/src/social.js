@@ -55,12 +55,34 @@ export const socialReady = (async () => {
       created_at TIMESTAMP DEFAULT now()
     )`);
     await query(`CREATE INDEX IF NOT EXISTS idx_manual_records_user ON manual_records(user_id)`);
+    // Цели на месяц: объём, число тренировок, рекорд, вес, своя
+    await query(`CREATE TABLE IF NOT EXISTS goals (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      month TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT,
+      discipline TEXT,
+      target TEXT,
+      target_num NUMERIC,
+      start_num NUMERIC,
+      done BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT now()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_goals_user_month ON goals(user_id, month)`);
+    // Вес по датам — чтобы видеть, как идёт цель «похудеть / набрать массу»
+    await query(`CREATE TABLE IF NOT EXISTS weight_log (
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      date DATE NOT NULL,
+      kg NUMERIC NOT NULL,
+      PRIMARY KEY (user_id, date)
+    )`);
     // видят ли друзья блок «Личные рекорды» в профиле (по умолчанию — да, выключается в «Приватности»)
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS show_records BOOLEAN DEFAULT TRUE`);
     await query(`DO $$
       DECLARE t text;
       BEGIN
-        FOREACH t IN ARRAY ARRAY['groups', 'group_members', 'referrals', 'workout_visible_to', 'manual_records'] LOOP
+        FOREACH t IN ARRAY ARRAY['groups', 'group_members', 'referrals', 'workout_visible_to', 'manual_records', 'goals', 'weight_log'] LOOP
           IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = t AND tableowner = current_user) THEN
             EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
           END IF;
