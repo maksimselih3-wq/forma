@@ -392,6 +392,125 @@ router.delete('/records/:id', requireTelegramAuth, async (req, res) => {
   }
 });
 
+// ---------- Цели на месяц ----------
+const GOAL_KINDS = ['volume', 'count', 'pb', 'weight', 'custom'];
+function mskMonth() { return new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 7); }
+function numSoft(v, min, max) {
+  const n = parseFloat(String(v ?? '').replace(',', '.'));
+  return Number.isFinite(n) && n >= min && n <= max ? Math.round(n * 10) / 10 : null;
+}
+async function currentWeight(uid) {
+  const w = await query(`SELECT kg FROM weight_log WHERE user_id = $1 ORDER BY date DESC LIMIT 1`, [uid]);
+  if (w.rows[0]) return Number(w.rows[0].kg);
+  const p = await query('SELECT weight_kg FROM athlete_profiles WHERE user_id = $1', [uid]).catch(() => ({ rows: [] }));
+  return p.rows[0]?.weight_kg != null ? Number(p.rows[0].weight_kg) : null;
+}
+
+// GET /api/auth/goals — цели текущего месяца + вес за 90 дней
+router.get('/goals', requireTelegramAuth, async (req, res) => {
+  try {
+    await socialReady;
+    const uid = await internalId(req.telegramUser.id);
+    if (!uid) return res.status(404).json({ error: 'User not found' });
+    const [g, w] = await Promise.all([
+      query(`SELECT id, month, kind, title, discipline, target, target_num, start_num, done FROM goals
+             WHERE user_id = $1 AND month = $2 ORDER BY id`, [uid, mskMonth()]),
+      query(`SELECT to_char(date, 'YYYY-MM-DD') AS date, kg FROM weight_log WHERE user_id = $1 AND date > CURRENT_DATE - 90 ORDER BY date`, [uid]),
+    ]);
+    const num = (x) => (x == null ? null : Number(x));
+    res.json({
+      month: mskMonth(),
+      goals: g.rows.map((x) => ({ ...x, target_num: num(x.target_num), start_num: num(x.start_num) })),
+      weights: w.rows.map((x) => ({ date: x.date, kg: Number(x.kg) })),
+      weight: await currentWeight(uid),
+    });
+  } catch (err) {
+    console.error('Goals get failed:', err.message);
+    res.status(500).json({ error: 'Не удалось загрузить цели' });
+  }
+});
+
+// POST /api/auth/goals { kind, title?, discipline?, target?, target_num? }
+router.post('/goals', requireTelegramAuth, async (req, res) => {
+  const b = req.body || {};
+  const kind = GOAL_KINDS.includes(b.kind) ? b.kind : null;
+  if (!kind) return res.status(400).json({ error: 'Выбери, какая цель' });
+  try {
+    await socialReady;
+    const uid = await internalId(req.telegramUser.id);
+    if (!uid) return res.status(404).json({ error: 'User not found' });
+    const cnt = await query('SELECT count(*)::int AS n FROM goals WHERE user_id = $1 AND month = $2', [uid, mskMonth()]);
+    if (cnt.rows[0].n >= 6) return res.status(400).json({ error: 'На месяц — до 6 целей' });
+    let title = textIn(b.title, 80), discipline = null, target = null, targetNum = null, startNum = null;
+    if (kind === 'volume') { targetNum = numSoft(b.target_num, 1, 2000); if (!targetNum) return res.status(400).json({ error: 'Сколько км за месяц?' }); }
+    if (kind === 'count') { targetNum = numSoft(b.target_num, 1, 90); if (!targetNum) return res.status(400).json({ error: 'Сколько тренировок за месяц?' }); }
+    if (kind === 'pb') {
+      discipline = textIn(b.discipline, 40); target = textIn(b.target, 20);
+      if (!discipline || !target || !/\d/.test(target)) return res.status(400).json({ error: 'Укажи дисциплину и целевой результат' });
+    }
+    if (kind === 'weight') {
+      targetNum = numSoft(b.target_num, 30, 250);
+      if (!targetNum) return res.status(400).json({ error: 'Укажи целевой вес, кг' });
+      const now = numSoft(b.current_num, 30, 250);
+      if (now) {
+        await query(`INSERT INTO weight_log (user_id, date, kg) VALUES ($1, CURRENT_DATE, $2)
+                     ON CONFLICT (user_id, date) DO UPDATE SET kg = EXCLUDED.kg`, [uid, now]);
+      }
+      startNum = now || (await currentWeight(uid));
+    }
+    if (kind === 'custom' && !title) return res.status(400).json({ error: 'Напиши цель' });
+    const r = await query(
+      `INSERT INTO goals (user_id, month, kind, title, discipline, target, target_num, start_num)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, month, kind, title, discipline, target, target_num, start_num, done`,
+      [uid, mskMonth(), kind, title, discipline, target, targetNum, startNum]);
+    const g = r.rows[0];
+    res.json({ goal: { ...g, target_num: g.target_num == null ? null : Number(g.target_num), start_num: g.start_num == null ? null : Number(g.start_num) } });
+  } catch (err) {
+    console.error('Goal save failed:', err.message);
+    res.status(500).json({ error: 'Не удалось сохранить цель' });
+  }
+});
+
+// POST /api/auth/goals/:id/done { done } — отметить свою цель выполненной
+router.post('/goals/:id/done', requireTelegramAuth, async (req, res) => {
+  try {
+    await socialReady;
+    const uid = await internalId(req.telegramUser.id);
+    await query('UPDATE goals SET done = $1 WHERE id = $2 AND user_id = $3', [req.body?.done !== false, parseInt(req.params.id, 10) || 0, uid]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Не удалось сохранить' });
+  }
+});
+
+// DELETE /api/auth/goals/:id
+router.delete('/goals/:id', requireTelegramAuth, async (req, res) => {
+  try {
+    await socialReady;
+    const uid = await internalId(req.telegramUser.id);
+    await query('DELETE FROM goals WHERE id = $1 AND user_id = $2', [parseInt(req.params.id, 10) || 0, uid]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Не удалось удалить цель' });
+  }
+});
+
+// POST /api/auth/weight { kg } — записать вес на сегодня (для цели по весу)
+router.post('/weight', requireTelegramAuth, async (req, res) => {
+  const kg = numSoft(req.body?.kg, 30, 250);
+  if (!kg) return res.status(400).json({ error: 'Укажи вес в кг' });
+  try {
+    await socialReady;
+    const uid = await internalId(req.telegramUser.id);
+    await query(`INSERT INTO weight_log (user_id, date, kg) VALUES ($1, CURRENT_DATE, $2)
+                 ON CONFLICT (user_id, date) DO UPDATE SET kg = EXCLUDED.kg`, [uid, kg]);
+    await query('UPDATE athlete_profiles SET weight_kg = $1 WHERE user_id = $2', [kg, uid]).catch(() => {});
+    res.json({ ok: true, kg });
+  } catch (err) {
+    res.status(500).json({ error: 'Не удалось сохранить вес' });
+  }
+});
+
 // GET /api/auth/morning — утренние отметки за 14 дней
 router.get('/morning', requireTelegramAuth, async (req, res) => {
   try {
