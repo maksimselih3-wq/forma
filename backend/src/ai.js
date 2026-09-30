@@ -27,6 +27,14 @@ const TIME_RULE = `Если у тренировки указано время (�
 // Как читать пульс
 const ALT_RULE = `Если у тренировки указано место и высота («место: … высота ≈ 1240 м», «СБОР») — учитывай высоту. Примерно с 1000–1200 м и выше в первые 3–7 дней обычно выше пульс (и в покое, и на работе), тяжелее RPE и медленнее темп при той же нагрузке, хуже сон — это адаптация к высоте, а не спад формы; сравнивай такие тренировки между собой, а не с равниной. После возвращения со среднегорья отметь, как изменились результаты, но без обещаний. Дни на высоте уже посчитаны программой (ниже), не пересчитывай. Если места нет — не упоминай его и ничего не выдумывай.`;
 
+export const SUPP_RULE = `БАДы, витамины, добавки: можешь рассказать общими словами, о чём спортсмену стоит подумать и почему (например, при плохом сне часто обсуждают магний; зимой — витамин D, лучше по анализу; при низком ферритине в анализах — железо, но только по назначению врача; белок — если не добирает с едой). Обязательно в каждом таком ответе:
+1) решение о любой добавке и дозировке — только вместе с врачом или тренером;
+2) каждый конкретный препарат нужно самому проверить в официальном сервисе РУСАДА list.rusada.ru — ты не можешь гарантировать, что он разрешён;
+3) у БАДов есть риск загрязнения запрещёнными веществами — безопаснее продукты с независимой проверкой партий на допинг; ответственность за то, что попало в организм, лежит на спортсмене.
+Никогда не называй конкретный бренд или препарат «точно разрешённым», не советуй рецептурные лекарства, гормоны и ничего из запрещённого списка ВАДА, не помогай «обойти» допинг-контроль.`;
+
+const HEALTH_RULE = `Анализы и здоровье: ты не врач и не ставишь диагнозов. Можешь объяснить простыми словами, что обычно означает показатель, и связать его с нагрузкой (например, КФК после тяжёлых тренировок часто повышена; у бегунов на выносливость нередко снижен ферритин; после высоты меняется гемоглобин). Если показатель вне нормы лаборатории — спокойно скажи, что это стоит обсудить с врачом (спортивным врачом), без запугивания и без назначения лекарств.`;
+
 const PULSE_RULE = `Если указан пульс: «средний» и «максимальный» — за тренировку, «минимальный» — насколько низко пульс опускался в паузах отдыха между отрезками/подходами. Чем ниже пульс успевает опуститься в паузах, тем лучше восстановление. Сравнивай с прошлыми тренировками похожей работы: если в паузах пульс стал опускаться хуже (минимальный выше обычного) или максимальный выше при той же работе — это признак накопленной усталости. Если пульса нет — не упоминай его. Не ставь медицинских диагнозов.`;
 
 // Темп бега: только для средних и длинных дистанций
@@ -129,6 +137,80 @@ export async function goalsFacts(userId) {
   return `Цели на этот месяц (${month}), прогресс посчитан программой: ${items.join('; ')}. Когда уместно — связывай тренировки с этими целями: помогают ли они к ним идти. Питание и вес обсуждай бережно, без жёстких диет.`;
 }
 
+// ---------- Здоровье: что Fom знает об анализах, БАДах и питании ----------
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
+}
+export function markerStatus(m) {
+  const v = Number(m.value), lo = m.ref_low == null ? null : Number(m.ref_low), hi = m.ref_high == null ? null : Number(m.ref_high);
+  if (!Number.isFinite(v)) return null;
+  if (lo != null && Number.isFinite(lo) && v < lo) return 'low';
+  if (hi != null && Number.isFinite(hi) && v > hi) return 'high';
+  return lo != null || hi != null ? 'ok' : null;
+}
+export function markerLine(m) {
+  const st = markerStatus(m);
+  const ref = m.ref_low != null || m.ref_high != null ? ` (норма лаборатории ${m.ref_low ?? '…'}–${m.ref_high ?? '…'})` : '';
+  return `${m.name} ${String(m.value).replace('.', ',')}${m.unit ? ' ' + m.unit : ''}${ref}${st === 'low' ? ' — НИЖЕ нормы' : st === 'high' ? ' — ВЫШЕ нормы' : ''}`;
+}
+export async function healthFacts(userId) {
+  const out = [];
+  try {
+    const b = await query(`SELECT to_char(date, 'YYYY-MM-DD') AS date, markers FROM blood_tests
+      WHERE user_id = $1 AND date >= CURRENT_DATE - 180 ORDER BY date DESC LIMIT 1`, [userId]);
+    const t = b.rows[0];
+    if (t) {
+      const ms = Array.isArray(t.markers) ? t.markers : [];
+      const off = ms.filter((m) => ['low', 'high'].includes(markerStatus(m)));
+      out.push(`Последний анализ крови ${t.date}: ${ms.length} ${plural(ms.length, 'показатель', 'показателя', 'показателей')}${off.length ? `; вне нормы лаборатории: ${off.map(markerLine).join('; ')}` : ', все в норме лаборатории (или норма не указана)'}.`);
+    }
+  } catch (e) { /* нет таблицы */ }
+  try {
+    const s = await query(`SELECT name, dose FROM supplements WHERE user_id = $1 AND active ORDER BY id`, [userId]);
+    if (s.rows.length) out.push(`Принимает (со слов спортсмена): ${s.rows.map((x) => x.name + (x.dose ? ` — ${x.dose}` : '')).join('; ')}.`);
+  } catch (e) { /* нет таблицы */ }
+  try {
+    const m = await query(`SELECT to_char(date, 'YYYY-MM-DD') AS date, count(*)::int AS n, sum(kcal)::int AS kcal, round(sum(protein))::int AS protein, round(sum(carbs))::int AS carbs
+      FROM meals WHERE user_id = $1 AND date >= CURRENT_DATE - 3 GROUP BY date ORDER BY date DESC`, [userId]);
+    if (m.rows.length) out.push(`Питание по фото/записям (оценка, неполная — не всё сфотографировано): ${m.rows.map((x) => `${x.date}: ${x.n} ${plural(x.n, 'приём', 'приёма', 'приёмов')} пищи, ≈${x.kcal} ккал, белок ≈${x.protein} г, углеводы ≈${x.carbs} г`).join('; ')}.`);
+  } catch (e) { /* нет таблицы */ }
+  return out.join('\n');
+}
+
+// Картинка для Claude: data:image/jpeg;base64,... → блок image
+function imageBlock(dataUrl) {
+  const m = /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(String(dataUrl || ''));
+  if (!m) throw new Error('bad image');
+  return { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } };
+}
+function jsonFrom(raw) {
+  const match = raw && raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Fom вернул не JSON');
+  return JSON.parse(match[0]);
+}
+
+/** Бланк анализа крови (фото) → { date, lab, markers: [{ name, value, unit, ref_low, ref_high }] } */
+export async function scanBloodImage(dataUrl) {
+  const system = `Ты читаешь фото бланка анализа крови из лаборатории. Верни ТОЛЬКО JSON без пояснений:
+{"date": "ГГГГ-ММ-ДД" или null, "lab": строка или null, "markers": [{"name": строка, "value": число, "unit": строка или null, "ref_low": число или null, "ref_high": число или null}]}
+Правила: название показателя — по-русски, коротко, как на бланке («Гемоглобин», «Ферритин», «Витамин D (25-OH)»). value — только число (запятую замени точкой). Референсные значения бери с бланка: «120–160» → ref_low 120, ref_high 160; «< 5» → ref_low null, ref_high 5; «> 30» → ref_low 30, ref_high null. Дата — дата взятия материала. Ничего не выдумывай: чего не видно — null; нечитаемые строки пропускай. Если это не анализ — {"markers": []}.`;
+  const raw = await callClaude({ model: MODEL_INSIGHTS, maxTokens: 2500, system, messages: [{ role: 'user', content: [imageBlock(dataUrl), { type: 'text', text: 'Разбери этот бланк.' }] }] });
+  return jsonFrom(raw);
+}
+
+/** Еда (фото и/или описание) → оценка КБЖУ */
+export async function scanFood({ image, text }) {
+  const system = `Ты помогаешь спортсмену примерно оценить приём пищи по фото и/или описанию. Верни ТОЛЬКО JSON без пояснений:
+{"title": короткое название по-русски, "items": [{"name": строка, "grams": число или null, "kcal": число, "protein": число, "fat": число, "carbs": число}], "kcal": число, "protein": число, "fat": число, "carbs": число, "confidence": "low"|"medium"|"high", "note": строка или null}
+Правила: оценивай порцию по фото (тарелка, упаковка, рука), граммы белка/жиров/углеводов — целые числа, итог — сумма по items. Если подпись уточняет продукт или вес — верь подписи. Если на фото не еда — {"items": [], "kcal": 0, "protein": 0, "fat": 0, "carbs": 0, "title": "Не похоже на еду", "confidence": "low"}. note — одно короткое замечание, если оценка очень неточная (например, «соус не виден»), иначе null. Без оценок «хорошо/плохо».`;
+  const content = [];
+  if (image) content.push(imageBlock(image));
+  content.push({ type: 'text', text: text ? `Подпись спортсмена: ${String(text).slice(0, 300)}` : 'Оцени этот приём пищи.' });
+  const raw = await callClaude({ model: MODEL, maxTokens: 900, system, messages: [{ role: 'user', content }] });
+  return jsonFrom(raw);
+}
+
 /**
  * Короткая справка о спортсмене для Fom: пол, возраст, рост, вес, пульс покоя, стаж, уровень,
  * вид спорта, рекорды, цель, травмы. Эти данные видит только сам спортсмен и Fom.
@@ -207,6 +289,11 @@ export async function athleteContext(userId) {
         }
       }
     } catch (e) { /* таблицы ещё нет */ }
+    // здоровье: последний анализ крови, БАДы, питание за 3 дня
+    try {
+      const h = await healthFacts(userId);
+      if (h) lines.push(h);
+    } catch (e) { /* таблиц ещё нет */ }
     return lines.join('\n');
   } catch (err) {
     console.error('Athlete context failed:', err.message);
@@ -619,6 +706,10 @@ ${TIME_RULE}
 
 ${ALT_RULE}
 
+${SUPP_RULE}
+
+${HEALTH_RULE}
+
 Записи тренировок за последние 30 дней:
 ${contextSummary || 'записей нет'}
 
@@ -828,4 +919,46 @@ ${ALT_RULE}
 🏔 На сборе — только если кто-то тренируется на высоте.
 Каждый пункт — одна строка: «Имя — причина». Без плана и указаний, как тренировать. Не выдумывай ничего сверх данных.`;
   return callClaude({ model: MODEL, maxTokens: 500, messages: [{ role: 'user', content: prompt }] });
+}
+
+/**
+ * Комментарий Fom к анализу крови: связь с нагрузкой перед сдачей, сравнение с прошлым анализом.
+ */
+export async function getBloodComment(test, prevTest, loadFacts, athlete = '') {
+  const lines = (t) => (Array.isArray(t.markers) ? t.markers : []).map(markerLine).join('\n');
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
+Спортсмен внёс анализ крови. Помоги ему понять его в связи с тренировками.
+
+Анализ от ${test.date}${test.lab ? ` (${test.lab})` : ''} — «ниже/выше нормы» посчитано программой по нормам лаборатории:
+${lines(test)}
+${prevTest ? `\nПрошлый анализ от ${prevTest.date}:\n${lines(prevTest)}\n` : ''}
+Нагрузка за 3 недели до сдачи (посчитано программой):
+${loadFacts || 'записей тренировок нет'}
+
+${HEALTH_RULE}
+
+${ALT_RULE}
+
+Ответ на русском, 4–7 коротких строк без markdown-звёздочек:
+- что вне нормы или заметно изменилось с прошлого раза (если есть прошлый) и что это обычно значит у спортсменов — простыми словами;
+- могла ли на это повлиять нагрузка (объём, тяжёлые тренировки накануне, высота) — только если это правда следует из данных;
+- что обсудить с врачом (если есть что) и когда может иметь смысл пересдать;
+- если всё в норме — коротко порадуйся и скажи, какие показатели полезно отслеживать спортсмену.
+Последней строкой: «Это не диагноз — решения по лечению и добавкам принимает врач.» Не назначай лекарств и доз.`;
+  return callClaude({ model: MODEL_INSIGHTS, maxTokens: 700, messages: [{ role: 'user', content: prompt }] });
+}
+
+/**
+ * Комментарий Fom к питанию за день: хватает ли энергии и белка под нагрузку и цели.
+ */
+export async function getFoodDayComment(dayFacts, athlete = '') {
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
+Спортсмен фотографирует еду, а программа примерно считает КБЖУ. Посмотри на его день.
+
+${dayFacts}
+
+Правила: цифры — грубая оценка по фото, и спортсмен мог сфотографировать не всё — помни об этом. Главное для спортсмена — чтобы еды хватало под нагрузку и восстановление; про недобор говори прямо, про «много» — бережно. Никаких жёстких диет, подсчёта «запрещённых» продуктов и стыда за еду. Если цель — набрать массу, а белка или энергии явно мало — скажи об этом и предложи 1–2 простые идеи, что добавить (обычная еда, не БАДы). Если цель — похудеть, не предлагай урезать еду в дни тяжёлых тренировок.
+
+Ответ — 3–4 коротких предложения на русском, без markdown.`;
+  return callClaude({ model: MODEL, maxTokens: 350, messages: [{ role: 'user', content: prompt }] });
 }
