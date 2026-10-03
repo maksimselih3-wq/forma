@@ -28,11 +28,15 @@ function serverToday() {
 /**
  * «Сегодня» по часам пользователя. Фронт присылает свою дату в заголовке X-Client-Date,
  * чтобы у спортсмена из Москвы в 01:00 «сегодня» не считалось вчерашним днём (сервер живёт по UTC).
+ *
+ * Часовые пояса лежат в пределах UTC−12…UTC+14, поэтому дата у человека может отличаться от
+ * серверной (UTC) не больше чем на ОДИН день. Всё, что дальше, — подделка заголовка:
+ * раньше допускалось ±2 дня, и можно было заранее заполнить завтра и послезавтра.
  * Если заголовка нет или дата странная — берём дату сервера.
  */
 export function getClientToday(req) {
   const d = req.headers['x-client-date'];
-  if (isValidDate(d) && Math.abs(daysBetween(serverToday(), d)) <= 2) return d;
+  if (isValidDate(d) && Math.abs(daysBetween(serverToday(), d)) <= 1) return d;
   return serverToday();
 }
 
