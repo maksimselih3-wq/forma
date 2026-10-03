@@ -71,7 +71,7 @@ export async function setReminderEnabled(telegramId, enabled) {
 
 // Текст напоминания
 export function reminderText(u, today) {
-  const name = u.first_name ? `, ${u.first_name}` : '';
+  const name = u.first_name ? `, ${escHtml(u.first_name)}` : ''; // сообщение уходит как HTML: имя с «<» или «&» ломало отправку
   const last = u.last_date ? String(u.last_date).slice(0, 10) : null;
   const streak = Number(u.current_streak) || 0;
   const tail = '\n\n<i>Отключить напоминания можно в профиле приложения.</i>';
