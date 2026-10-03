@@ -10,7 +10,7 @@ import { socialReady } from '../social.js';
  * Видит его только создатель группы; спортсмены при вступлении соглашаются, что тренер видит их записи.
  *
  *  GET  /api/coach/groups/:id                      — команда: сводные цифры, спортсмены с пометками
- *  GET  /api/coach/groups/:id/members/:uid         — спортсмен: неделя по дням, цифры, вывод Fom (если уже был)
+ *  GET  /api/coach/groups/:id/members/:uid         —x спортсмен: неделя по дням, цифры, вывод Fom (если уже был)
  *  POST /api/coach/groups/:id/members/:uid/fom     — попросить Fom написать вывод для тренера
  *  POST /api/coach/groups/:id/members/:uid/message — написать спортсмену (придёт от бота)
  *  GET  /api/coach/groups/:id/digest               — сводка недели от Fom по группе
@@ -291,7 +291,7 @@ router.post('/groups/:id/members/:uid/fom', async (req, res) => {
   const trainings = ws.rows.filter((x) => x.type === 'training');
   const alt = trainings.length ? altitudeFacts(trainings[0], trainings.slice(1)) : '';
   try {
-    const text = await getCoachAthleteSummary(displayName(a), factsLine(displayName(a), byId[a.id]) + (alt ? '\n' + alt : ''), ws.rows, await athleteContext(a.id));
+    const text = await getCoachAthleteSummary(displayName(a), factsLine(displayName(a), byId[a.id]) + (alt ? '\n' + alt : ''), ws.rows, await athleteContext(a.id, { forCoach: true }));
     if (!text) throw new Error('пустой ответ');
     await query(
       `INSERT INTO coach_notes (coach_id, athlete_id, day, text) VALUES ($1, $2, $3, $4)
