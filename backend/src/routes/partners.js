@@ -239,7 +239,8 @@ router.get('/:id', async (req, res) => {
       joined: members.rows.some((m) => m.id === req.me.id),
     },
     members: members.rows,
-    messages: messages.rows.reverse().map((m) => ({ ...m, author: wById[m.user_id] || null, mine: m.user_id === req.me.id })),
+    // Чат видят только те, кто идёт на пробежку (автор — тоже участник); остальные видят только саму пробежку
+    messages: !members.rows.some((m) => m.id === req.me.id) ? [] : messages.rows.reverse().map((m) => ({ ...m, author: wById[m.user_id] || null, mine: m.user_id === req.me.id })),
   });
 });
 
@@ -278,6 +279,8 @@ router.post('/:id/messages', async (req, res) => {
   lastMsgAt.set(req.me.id, now);
   const run = id && (await getRun(id));
   if (!run) return res.status(404).json({ error: 'Пробежка не найдена или отменена' });
+  const isMember = await query('SELECT 1 FROM run_members WHERE run_id = $1 AND user_id = $2', [id, req.me.id]);
+  if (!isMember.rows.length) return res.status(403).json({ error: 'Писать в чат могут только те, кто идёт на пробежку — нажми «Иду»' });
   const r = await query(
     'INSERT INTO run_messages (run_id, user_id, text) VALUES ($1, $2, $3) RETURNING id, text, created_at, user_id', [id, req.me.id, msg]);
 
