@@ -3,7 +3,7 @@ import { query } from './db.js';
 dotenv.config();
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const MODEL_INSIGHTS = 'claude-sonnet-5'; // для разбора за период нужна модель посерьёзнее одной тренировки
+const MODEL_INSIGHTS = process.env.MODEL_INSIGHTS || 'claude-sonnet-5'; // для разбора за период нужна модель посерьёзнее одной тренировки
 const MODEL = 'claude-haiku-4-5-20251001'; // дёшево и быстро — идеально для разбора одной тренировки
 
 // Кто такой Fom — общее описание для всех запросов к ИИ
@@ -227,7 +227,12 @@ function yearsRu(n) {
   return `${n} ${w}`;
 }
 
-export async function athleteContext(userId) {
+/**
+ * Сводка о спортсмене для Fom. forCoach = true — когда Fom пишет тренеру, а не самому спортсмену:
+ * тогда НЕ передаём то, что в приложении обещано как «видит только ты и Fom» —
+ * анализы крови, БАДы, питание, травмы, вес и цели по весу. Иначе Fom мог пересказать их тренеру.
+ */
+export async function athleteContext(userId, { forCoach = false } = {}) {
   try {
     const u = await query('SELECT sport, discipline FROM users WHERE id = $1', [userId]);
     let p = {};
@@ -241,7 +246,7 @@ export async function athleteContext(userId) {
     if (p.sex) parts.push(p.sex === 'f' ? 'женщина' : 'мужчина');
     if (p.birth_year) parts.push(`возраст ${yearsRu(new Date().getFullYear() - p.birth_year)}`);
     if (p.height_cm) parts.push(`рост ${p.height_cm} см`);
-    if (p.weight_kg) parts.push(`вес ${Number(p.weight_kg)} кг`);
+    if (p.weight_kg && !forCoach) parts.push(`вес ${Number(p.weight_kg)} кг`);
     if (p.rest_hr) parts.push(`пульс в покое ${p.rest_hr}`);
     if (p.experience_years != null) parts.push(`стаж ${yearsRu(p.experience_years)}`);
     if (p.level) parts.push(`уровень: ${LEVELS_RU[p.level] || p.level}`);
@@ -250,7 +255,7 @@ export async function athleteContext(userId) {
     if (parts.length) lines.push(parts.join(', '));
     if (p.records) lines.push(`Личные рекорды: ${p.records}`);
     if (p.goal) lines.push(`Цель: ${p.goal}`);
-    if (p.injuries) lines.push(`Травмы и ограничения: ${p.injuries}`);
+    if (p.injuries && !forCoach) lines.push(`Травмы и ограничения: ${p.injuries}`);
     // лучшие результаты на стартах, которые спортсмен записал в дневник
     try {
       const comps = await query(`SELECT id, date, competition FROM workouts WHERE user_id = $1 AND competition IS NOT NULL`, [userId]);
@@ -263,7 +268,7 @@ export async function athleteContext(userId) {
       if (best.length) lines.push(`Личные рекорды (со стартов в дневнике и внесённые вручную): ${best.map((b) => `${b.discipline} — ${b.result}${b.date && b.date !== '1900-01-01' ? ` (${b.date})` : ''}`).join('; ')}`);
     } catch (e) { /* колонки ещё нет — не страшно */ }
     // цели на месяц и как они идут (прогресс посчитан программой)
-    try {
+    if (!forCoach) try {
       const g = await goalsFacts(userId);
       if (g) lines.push(g);
     } catch (e) { /* таблицы ещё нет */ }
@@ -295,7 +300,7 @@ export async function athleteContext(userId) {
       }
     } catch (e) { /* таблицы ещё нет */ }
     // здоровье: последний анализ крови, БАДы, питание за 3 дня
-    try {
+    if (!forCoach) try {
       const h = await healthFacts(userId);
       if (h) lines.push(h);
     } catch (e) { /* таблиц ещё нет */ }
@@ -618,24 +623,39 @@ async function callClaude({ model, maxTokens, system, messages }) {
   const body = { model, max_tokens: maxTokens, messages };
   if (system) body.system = system;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify(body),
-  });
+  // Таймаут 60 с (фото бланков читаются дольше обычного ответа) и ОДИН повтор, если ИИ перегружен
+  // (429, 5xx) или оборвалась сеть. По таймауту не повторяем — иначе платим дважды за долгий запрос.
+  for (let attempt = 0; ; attempt++) {
+    let response;
+    try {
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(60000),
+      });
+    } catch (err) {
+      if (attempt === 0 && err?.name !== 'TimeoutError') { await new Promise((r) => setTimeout(r, 800)); continue; }
+      throw err;
+    }
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Claude API error: ${response.status} ${errText}`);
+    if (!response.ok) {
+      const errText = await response.text();
+      if (attempt === 0 && [429, 500, 502, 503, 529].includes(response.status)) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
+      throw new Error(`Claude API error: ${response.status} ${errText}`);
+    }
+
+    const data = await response.json();
+    const textBlock = data.content.find((b) => b.type === 'text');
+    return textBlock ? textBlock.text : null;
   }
-
-  const data = await response.json();
-  const textBlock = data.content.find((b) => b.type === 'text');
-  return textBlock ? textBlock.text : null;
 }
 
 /**
