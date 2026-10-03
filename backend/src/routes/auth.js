@@ -7,10 +7,18 @@ import { rememberReferral, settleReferral, socialReady, pioneerNo } from '../soc
 
 const router = Router();
 
+// Когда человек принял политику конфиденциальности (пока пусто — приложение покажет окно согласия)
+export const authReady = (async () => {
+  await dbReady;
+  try { await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_at TIMESTAMPTZ'); }
+  catch (err) { console.error('consent_at column failed:', err.message); }
+})();
+
 // POST /api/auth/login — вызывается один раз при открытии Mini App
 router.post('/login', requireTelegramAuth, async (req, res) => {
   const tgUser = req.telegramUser;
   await remindersReady; // чтобы в ответе уже была настройка напоминаний
+  await authReady;
 
   const existing = await query('SELECT * FROM users WHERE telegram_id = $1', [tgUser.id]);
 
@@ -63,6 +71,19 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
   user = { ...user, digest_on_pref: user.digest_enabled ?? user.remind_enabled ?? true, partners_notify: user.partners_notify !== false };
 
   res.json({ user });
+});
+
+// POST /api/auth/consent — человек принял политику конфиденциальности (фиксируем время один раз)
+router.post('/consent', requireTelegramAuth, async (req, res) => {
+  try {
+    await authReady;
+    const r = await query('UPDATE users SET consent_at = COALESCE(consent_at, now()) WHERE telegram_id = $1 RETURNING consent_at', [req.telegramUser.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'User not found' });
+    res.json({ ok: true, consent_at: r.rows[0].consent_at });
+  } catch (err) {
+    console.error('Consent save failed:', err.message);
+    res.status(500).json({ error: 'Не получилось сохранить' });
+  }
 });
 
 // POST /api/auth/avatar { image } — своё фото профиля.
