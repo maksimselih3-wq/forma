@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { query } from './db.js';
+import { takeQuota, refundQuota } from './aiQuota.js';
 dotenv.config();
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -754,7 +755,26 @@ ${contextSummary || 'записей нет'}
  * Fom оценивает тренировку в контексте предыдущих дней
  * и даёт короткий фидбек + совет по восстановлению.
  */
+/**
+ * Отзыв Fom о тренировке — с дневным лимитом (список лимитов в aiQuota.js).
+ * Если лимит исчерпан — бросает ошибку с quota = true: запись при этом уже сохранена,
+ * просто отзыв не пишется. Если ИИ не ответил — попытка возвращается.
+ */
 export async function getWorkoutFeedback(workout, recentWorkouts, athlete = '', similar = null) {
+  const uid = workout?.user_id;
+  if (uid) {
+    const q = await takeQuota(uid, 'feedback');
+    if (!q.ok) { const e = new Error('Дневной лимит отзывов Fom исчерпан'); e.quota = true; throw e; }
+  }
+  try {
+    return await getWorkoutFeedbackRaw(workout, recentWorkouts, athlete, similar);
+  } catch (err) {
+    if (uid) await refundQuota(uid, 'feedback').catch(() => {});
+    throw err;
+  }
+}
+
+async function getWorkoutFeedbackRaw(workout, recentWorkouts, athlete = '', similar = null) {
   const recentSummary = recentWorkouts.map(describeWorkout).join('\n');
   const dayLabel = workout.isBackdated ? 'Тренировка (внесена задним числом)' : 'Сегодняшняя тренировка';
 
