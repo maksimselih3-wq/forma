@@ -109,7 +109,10 @@ const ready = (async () => {
 const HONEST_DAYS_SQL = `
   SELECT user_id, date FROM workouts
   WHERE date > CURRENT_DATE - 400
-    AND created_at <= (date + 2)::timestamp`;
+    AND created_at <= (date + 2)::timestamp
+    AND created_at >= date::timestamp - interval '12 hours'`;
+// Нижняя граница: запись на «завтра», сделанную заранее, в честную серию не берём.
+// 12 часов — запас на часовые пояса (самый восточный в России — UTC+12: его полночь = 12:00 UTC накануне).
 
 // Серия дней подряд, которая заканчивается сегодня или вчера (по Москве)
 function streakFromDates(dates, today) {
