@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { requireTelegramAuth } from './telegramAuth.js';
 import { rateLimit } from './rateLimit.js';
 import { protectAsync } from './asyncSafe.js';
+import { aiQuota } from './aiQuota.js';
 
 import authRoutes from './routes/auth.js';
 import workoutRoutes from './routes/workouts.js';
@@ -43,6 +44,13 @@ app.use('/api', rateLimit({
 // раньше 10 МБ разбирались ещё до проверки, и любой аноним мог гонять тяжёлые запросы.
 app.use('/api/health', requireTelegramAuth, express.json({ limit: '10mb' }), protectAsync(healthRoutes));
 app.use(express.json());
+
+// Дневные лимиты на платные вызовы ИИ (см. aiQuota.js). Ставим ПЕРЕД роутерами: сначала проверка лимита,
+// потом обработчик. Отзыв о тренировке считается внутри ai.js (он пишется ещё и при сохранении записи),
+// а здесь для кнопки «Обновить отзыв» лимит только проверяем, чтобы человек сразу увидел понятное сообщение.
+app.post('/api/workouts/parse', requireTelegramAuth, aiQuota('parse'));
+app.post('/api/workouts/:id/feedback', requireTelegramAuth, aiQuota('feedback', { consume: false }));
+app.get('/api/insights', requireTelegramAuth, aiQuota('insights'));
 
 // Ошибка в async-обработчике иначе «подвешивает» запрос до таймаута (Express 4) — protectAsync
 // превращает её в нормальный ответ 500. Для роутеров с собственной обёрткой это безвредно.
