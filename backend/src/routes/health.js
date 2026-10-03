@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { query, dbReady, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { getClientToday, isValidDate } from '../streak.js';
+import { takeQuota, refundQuota, QUOTA_MESSAGES } from '../aiQuota.js';
 import {
   volumeKm, athleteContext, markerStatus, scanBloodImage, scanFood, getBloodComment, getFoodDayComment,
 } from '../ai.js';
@@ -99,15 +100,10 @@ const f1 = (n) => String(Math.round(n * 10) / 10).replace('.', ',');
 function addDays(str, n) { const d = new Date(str + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
 const day = (w) => String(w.date).slice(0, 10);
 
-// Сколько раз в день можно «сканировать» фото (распознавание стоит денег) — считаем в памяти
-const scans = new Map();
-function scanAllowed(userId, kind, limit) {
-  const key = `${userId}:${kind}:${new Date().toISOString().slice(0, 10)}`;
-  const n = scans.get(key) || 0;
-  if (n >= limit) return false;
-  if (scans.size > 5000) scans.clear();
-  scans.set(key, n + 1);
-  return true;
+// Сколько раз в день можно «сканировать» фото (распознавание стоит денег).
+// Счётчик теперь в базе (aiQuota.js): раньше он лежал в памяти и обнулялся при каждом перезапуске сервера.
+async function scanAllowed(userId, kind) {
+  return (await takeQuota(userId, `scan_${kind}`)).ok;
 }
 
 // Текущий вес: последняя запись в «Весе» (цели), иначе из анкеты
@@ -196,7 +192,7 @@ router.post('/blood/scan', async (req, res) => {
   const isPdf = typeof image === 'string' && image.startsWith('data:application/pdf');
   if (typeof image !== 'string' || !(isPdf ? PDF_RE.test(image) : IMG_RE.test(image))) return res.status(400).json({ error: 'Нужно фото или PDF бланка' });
   if (image.length > (isPdf ? 8_500_000 : 3_500_000)) return res.status(400).json({ error: isPdf ? 'PDF слишком большой — до 6 МБ' : 'Фото слишком большое' });
-  if (!scanAllowed(req.me.id, 'blood', 6)) return res.status(429).json({ error: 'На сегодня распознаваний бланков хватит — внеси показатели вручную' });
+  if (!(await scanAllowed(req.me.id, 'blood'))) return res.status(429).json({ error: QUOTA_MESSAGES.scan_blood });
   try {
     const p = await scanBloodImage(image);
     res.json({
@@ -206,6 +202,7 @@ router.post('/blood/scan', async (req, res) => {
     });
   } catch (err) {
     console.error('Blood scan failed:', err.message);
+    await refundQuota(req.me.id, 'scan_blood').catch(() => {}); // ИИ не прочитал — попытка не потрачена
     res.status(502).json({ error: 'Не получилось прочитать бланк. Попробуй фото ровнее и при хорошем свете — или внеси вручную.' });
   }
 });
@@ -228,18 +225,25 @@ router.post('/blood', async (req, res) => {
     t = (await query(`INSERT INTO blood_tests (user_id, date, lab, markers, notes) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
       [req.me.id, date, txt(b.lab, 60), JSON.stringify(markers), txt(b.notes, 500)])).rows[0];
   }
-  try { t.fom = await writeBloodComment(req.me.id, t); } catch (err) { console.error('Blood comment failed:', err.message); }
+  try {
+    if ((await takeQuota(req.me.id, 'health')).ok) {
+      try { t.fom = await writeBloodComment(req.me.id, t); }
+      catch (err) { await refundQuota(req.me.id, 'health').catch(() => {}); throw err; }
+    }
+  } catch (err) { console.error('Blood comment failed:', err.message); }
   res.json({ test: testOut(t) });
 });
 
 router.post('/blood/:id/fom', async (req, res) => {
   const t = (await query('SELECT * FROM blood_tests WHERE id = $1 AND user_id = $2', [parseInt(req.params.id, 10) || 0, req.me.id])).rows[0];
   if (!t) return res.status(404).json({ error: 'Анализ не найден' });
+  if (!(await takeQuota(req.me.id, 'health')).ok) return res.status(429).json({ error: QUOTA_MESSAGES.health });
   try {
     t.fom = await writeBloodComment(req.me.id, t);
     res.json({ test: testOut(t) });
   } catch (err) {
     console.error('Blood comment failed:', err.message);
+    await refundQuota(req.me.id, 'health').catch(() => {});
     res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
   }
 });
@@ -299,7 +303,7 @@ router.post('/food/scan', async (req, res) => {
   const text = txt(req.body.text, 300);
   if (image && (typeof image !== 'string' || !IMG_RE.test(image) || image.length > 3_500_000)) return res.status(400).json({ error: 'Не получилось прочитать фото' });
   if (!image && !text) return res.status(400).json({ error: 'Сфотографируй еду или опиши её' });
-  if (!scanAllowed(req.me.id, 'food', 25)) return res.status(429).json({ error: 'На сегодня распознаваний хватит — впиши цифры вручную' });
+  if (!(await scanAllowed(req.me.id, 'food'))) return res.status(429).json({ error: QUOTA_MESSAGES.scan_food });
   try {
     const p = await scanFood({ image, text });
     const items = (Array.isArray(p.items) ? p.items : []).slice(0, 20).map((x) => ({
@@ -318,6 +322,7 @@ router.post('/food/scan', async (req, res) => {
     });
   } catch (err) {
     console.error('Food scan failed:', err.message);
+    await refundQuota(req.me.id, 'scan_food').catch(() => {});
     res.status(502).json({ error: 'Fom не смог оценить еду — попробуй ещё раз или впиши вручную' });
   }
 });
@@ -360,6 +365,7 @@ router.post('/food/fom', async (req, res) => {
     t.weight ? `Вес ${f1(t.weight)} кг. Ориентиры для спортсмена на такой день: белок ${t.protein[0]}–${t.protein[1]} г (${t.protein_per_kg.join('–')} г/кг), углеводы ${t.carbs[0]}–${t.carbs[1]} г (${t.carbs_per_kg.join('–')} г/кг).` : 'Вес не указан — ориентиры в граммах не посчитаны.',
     t.goal === 'gain' ? 'Цель на месяц: набрать массу.' : t.goal === 'loss' ? 'Цель на месяц: снизить вес.' : '',
   ].filter(Boolean).join('\n');
+  if (!(await takeQuota(req.me.id, 'health')).ok) return res.status(429).json({ error: QUOTA_MESSAGES.health });
   try {
     const text = await getFoodDayComment(facts, await athleteContext(req.me.id));
     if (!text) throw new Error('пустой ответ');
@@ -367,6 +373,7 @@ router.post('/food/fom', async (req, res) => {
     res.json({ fom: text });
   } catch (err) {
     console.error('Food comment failed:', err.message);
+    await refundQuota(req.me.id, 'health').catch(() => {});
     res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
   }
 });
