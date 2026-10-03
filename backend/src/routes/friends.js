@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth, validateInitData } from '../telegramAuth.js';
 import { volumeKm, bestResults, parseResult, disciplineKey, higherIsBetter } from '../ai.js';
-import { socialReady, visibleToSql, canSeeCustom, manualRecordsAsStarts, pioneerNo, isCoachOf, shareGroup, newGroupCode, refCode, referralStats, REF_MIN_WORKOUTS, REF_MAX_BONUS } from '../social.js';
+import { socialReady, visibleToSql, canSeeCustom, manualRecordsAsStarts, pioneerNo, isCoachOf, shareGroup, newGroupCode, getRefCode, referralStats, REF_MIN_WORKOUTS, REF_MAX_BONUS } from '../social.js';
 
 const router = Router();
 
@@ -491,7 +491,7 @@ function weekStart(req) {
 router.get('/invite', async (req, res) => {
   const stats = await referralStats(req.me.id);
   res.json({
-    link: `https://t.me/${BOT_USERNAME}?start=r_${refCode(req.me.id)}`,
+    link: `https://t.me/${BOT_USERNAME}?start=r_${await getRefCode(req.me.id)}`,
     ...stats, min_workouts: REF_MIN_WORKOUTS, max_bonus: REF_MAX_BONUS,
   });
 });
