@@ -4,6 +4,7 @@ import { requireTelegramAuth } from '../telegramAuth.js';
 import { getClientToday } from '../streak.js';
 import { volumeKm, shortWorkout, altitudeFacts, athleteContext, getCoachAthleteSummary, getCoachTeamDigest } from '../ai.js';
 import { socialReady } from '../social.js';
+import { takeQuota, refundQuota, QUOTA_MESSAGES } from '../aiQuota.js';
 
 /**
  * Кабинет тренера — надстройка над тренерской группой (groups.coach_mode = true).
@@ -290,6 +291,7 @@ router.post('/groups/:id/members/:uid/fom', async (req, res) => {
   const ws = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date > $2::date - 14 AND w.date <= $2::date ORDER BY w.date DESC, w.session DESC`, [a.id, today]);
   const trainings = ws.rows.filter((x) => x.type === 'training');
   const alt = trainings.length ? altitudeFacts(trainings[0], trainings.slice(1)) : '';
+  if (!(await takeQuota(req.me.id, 'coach')).ok) return res.status(429).json({ error: QUOTA_MESSAGES.coach });
   try {
     const text = await getCoachAthleteSummary(displayName(a), factsLine(displayName(a), byId[a.id]) + (alt ? '\n' + alt : ''), ws.rows, await athleteContext(a.id, { forCoach: true }));
     if (!text) throw new Error('пустой ответ');
@@ -299,6 +301,7 @@ router.post('/groups/:id/members/:uid/fom', async (req, res) => {
     res.json({ fom: text });
   } catch (err) {
     console.error('Coach summary failed:', err.message);
+    await refundQuota(req.me.id, 'coach').catch(() => {});
     res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
   }
 });
@@ -335,6 +338,7 @@ router.get('/groups/:id/digest', async (req, res) => {
     const c = await query('SELECT text FROM coach_digests WHERE group_id = $1 AND day = $2', [g.id, today]);
     if (c.rows[0]) return res.json({ text: c.rows[0].text, cached: true });
   }
+  if (!(await takeQuota(req.me.id, 'coach')).ok) return res.status(429).json({ error: QUOTA_MESSAGES.coach });
   try {
     const text = await buildDigest(g, today);
     if (!text) throw new Error('пустой ответ');
@@ -343,6 +347,7 @@ router.get('/groups/:id/digest', async (req, res) => {
     res.json({ text });
   } catch (err) {
     console.error('Coach digest failed:', err.message);
+    await refundQuota(req.me.id, 'coach').catch(() => {});
     res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
   }
 });
