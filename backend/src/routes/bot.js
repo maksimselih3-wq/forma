@@ -5,6 +5,7 @@ import { requireTelegramAuth } from '../telegramAuth.js';
 import { GIVEAWAYS, giveawayStatus, runDraw, startGiveawayScheduler, isAdmin, honestStreak, nextDrawAt } from '../giveaway.js';
 import { startReminderScheduler, reminderText, sendWeeklyDigests } from '../reminders.js';
 import { rememberReferral } from '../social.js';
+import { adminDeleteRun } from './partners.js';
 
 /**
  * Telegram-бот Forma:
@@ -38,6 +39,7 @@ async function tg(method, body) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
     });
     const data = await res.json();
     if (!data.ok) console.error(`Telegram ${method} failed:`, data.description);
@@ -362,12 +364,19 @@ router.get('/giveaway', requireTelegramAuth, async (req, res) => {
 // картинку сюда, а мы отдаём её по короткой ссылке примерно час (в памяти сервера, без базы).
 const stories = new Map(); // id -> { buf, at }
 const STORY_TTL = 60 * 60 * 1000;
-const STORY_MAX = 300;
+const STORY_MAX = 100;
+const STORY_PER_USER = 5; // чтобы один человек не забил память сервера
 
 function cleanStories() {
   const now = Date.now();
   for (const [id, s] of stories) if (now - s.at > STORY_TTL) stories.delete(id);
   while (stories.size > STORY_MAX) stories.delete(stories.keys().next().value); // самые старые
+}
+
+function storyQuotaOk(owner) {
+  let n = 0;
+  for (const s of stories.values()) if (s.owner === owner) n++;
+  return n < STORY_PER_USER;
 }
 
 // POST /api/bot/story — тело запроса: JPEG-картинка (image/jpeg), до 1.5 МБ
@@ -376,8 +385,9 @@ router.post('/story', requireTelegramAuth, express.raw({ type: 'image/jpeg', lim
   const isJpeg = Buffer.isBuffer(buf) && buf.length > 1000 && buf[0] === 0xff && buf[1] === 0xd8;
   if (!isJpeg) return res.status(400).json({ error: 'Нужна картинка JPEG' });
   cleanStories();
+  if (!storyQuotaOk(req.telegramUser.id)) return res.status(429).json({ error: 'Слишком много картинок подряд — подожди немного' });
   const id = crypto.randomBytes(12).toString('hex');
-  stories.set(id, { buf, at: Date.now() });
+  stories.set(id, { buf, at: Date.now(), owner: req.telegramUser.id });
   res.json({ url: `${PUBLIC_URL}/api/bot/story/${id}.jpg` });
 });
 
@@ -386,8 +396,9 @@ router.post('/export', requireTelegramAuth, express.raw({ type: 'text/csv', limi
   const buf = req.body;
   if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'Пустой файл' });
   cleanStories();
+  if (!storyQuotaOk(req.telegramUser.id)) return res.status(429).json({ error: 'Слишком много файлов подряд — подожди немного' });
   const id = crypto.randomBytes(12).toString('hex');
-  stories.set(id, { buf, at: Date.now(), type: 'text/csv; charset=utf-8' });
+  stories.set(id, { buf, at: Date.now(), type: 'text/csv; charset=utf-8', owner: req.telegramUser.id });
   res.json({ url: `${PUBLIC_URL}/api/bot/story/${id}.csv` });
 });
 
