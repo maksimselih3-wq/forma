@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { query, dbReady } from './db.js';
 
 /**
@@ -79,6 +80,9 @@ export const socialReady = (async () => {
     )`);
     // видят ли друзья блок «Личные рекорды» в профиле (по умолчанию — да, выключается в «Приватности»)
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS show_records BOOLEAN DEFAULT TRUE`);
+    // случайный код приглашения человека (раньше код считался из номера в базе и легко угадывался)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_token TEXT`);
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS users_ref_token_uq ON users(ref_token)`);
     await query(`DO $$
       DECLARE t text;
       BEGIN
@@ -103,15 +107,28 @@ export const socialReady = (async () => {
 })();
 
 // ---------- Коды ----------
-// Код приглашения человека: его номер в базе в «коротком» виде (буквы и цифры)
-export function refCode(userId) {
-  return (Number(userId) * 7 + 1000).toString(36);
-}
-function refCodeToId(code) {
-  const n = parseInt(String(code || ''), 36);
-  if (!Number.isFinite(n) || (n - 1000) % 7 !== 0) return null;
-  const id = (n - 1000) / 7;
-  return id > 0 ? id : null;
+// Код приглашения человека: случайные 16 символов (0-9, a-f), хранятся в users.ref_token.
+// Раньше код считался по формуле из номера в базе — по любой ссылке можно было вычислить
+// код любого человека и «подружиться» с ним без подтверждения.
+// Старые ссылки-приглашения перестают работать (ищем только по новому коду).
+export async function getRefCode(userId) {
+  await socialReady;
+  const cur = await query('SELECT ref_token FROM users WHERE id = $1', [userId]);
+  if (cur.rows[0]?.ref_token) return cur.rows[0].ref_token;
+  for (let i = 0; i < 5; i++) {
+    const token = crypto.randomBytes(8).toString('hex');
+    try {
+      const r = await query(
+        'UPDATE users SET ref_token = $1 WHERE id = $2 AND ref_token IS NULL RETURNING ref_token', [token, userId]);
+      if (r.rows[0]) return r.rows[0].ref_token;
+      // кто-то успел раньше (два запроса одновременно) — берём уже записанный
+      const again = await query('SELECT ref_token FROM users WHERE id = $1', [userId]);
+      if (again.rows[0]?.ref_token) return again.rows[0].ref_token;
+    } catch (err) {
+      if (err.code !== '23505') throw err; // 23505 — такой код уже занят, пробуем другой
+    }
+  }
+  throw new Error('Не удалось создать код приглашения');
 }
 // Код группы: 6 символов без похожих букв (0/O, 1/l)
 export function newGroupCode() {
@@ -147,13 +164,12 @@ export async function shareGroup(a, b) {
 // ---------- Приглашения ----------
 // Человек открыл бота по ссылке-приглашению (ещё может не быть в базе)
 export async function rememberReferral(inviteeTg, payload) {
-  const m = /^r_([a-z0-9]+)$/i.exec(String(payload || ''));
+  const m = /^r_([a-f0-9]{16})$/i.exec(String(payload || ''));
   if (!m) return false;
-  const inviterId = refCodeToId(m[1].toLowerCase());
-  if (!inviterId) return false;
   await socialReady;
-  const inviter = await query('SELECT id, telegram_id FROM users WHERE id = $1', [inviterId]);
+  const inviter = await query('SELECT id, telegram_id FROM users WHERE ref_token = $1', [m[1].toLowerCase()]);
   if (!inviter.rows[0] || String(inviter.rows[0].telegram_id) === String(inviteeTg)) return false;
+  const inviterId = inviter.rows[0].id;
   // уже пользуется Forma — это не новый человек
   const existing = await query('SELECT id FROM users WHERE telegram_id = $1', [inviteeTg]);
   if (existing.rows[0]) return false;
