@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query, dbReady } from '../db.js';
+import { query, dbReady, pool } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday } from '../streak.js';
 import { remindersReady, setReminderEnabled, setNotifyPrefs } from '../reminders.js';
@@ -554,6 +554,47 @@ router.post('/morning', requireTelegramAuth, async (req, res) => {
   } catch (err) {
     console.error('Morning save failed:', err.message);
     res.status(500).json({ error: 'Не удалось сохранить отметку' });
+  }
+});
+
+// Стереть человека и всё, что с ним связано. Большинство таблиц удаляется каскадом само;
+// таблицы, созданные вручную в Supabase (друзья и т.п.), могли остаться без каскада — их чистим здесь,
+// находя такие связи в самой базе, чтобы удаление не упало на «забытой» таблице.
+async function eraseUser(client, userId) {
+  const refs = async (table) => (await client.query(
+    `SELECT c.conrelid::regclass::text AS tbl, quote_ident(a.attname) AS col, c.conrelid = 'users'::regclass AS self
+     FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+     WHERE c.contype = 'f' AND c.confrelid = $1::regclass AND c.confdeltype IN ('a', 'r')`, [table])).rows;
+  for (const f of await refs('workouts')) {
+    await client.query(`DELETE FROM ${f.tbl} WHERE ${f.col} IN (SELECT id FROM workouts WHERE user_id = $1)`, [userId]);
+  }
+  for (const f of await refs('users')) {
+    if (f.self) await client.query(`UPDATE ${f.tbl} SET ${f.col} = NULL WHERE ${f.col} = $1`, [userId]); // ссылка на другого человека внутри users
+    else await client.query(`DELETE FROM ${f.tbl} WHERE ${f.col} = $1`, [userId]);
+  }
+  return client.query('DELETE FROM users WHERE id = $1 RETURNING id', [userId]);
+}
+
+// DELETE /api/auth/me { confirm: true } — стереть все мои данные (записи, анализы, друзья, чаты, пробежки, лимиты ИИ…)
+router.delete('/me', requireTelegramAuth, async (req, res) => {
+  if (req.body?.confirm !== true) return res.status(400).json({ error: 'Нужно подтверждение' });
+  let client;
+  try {
+    await dbReady;
+    const u = await query('SELECT id FROM users WHERE telegram_id = $1', [req.telegramUser.id]);
+    if (!u.rows[0]) return res.status(404).json({ error: 'User not found' });
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await eraseUser(client, u.rows[0].id);
+    await client.query('COMMIT');
+    console.log('Account deleted by user:', u.rows[0].id);
+    res.json({ ok: true });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('Account delete failed:', err.message);
+    res.status(500).json({ error: 'Не получилось удалить данные — попробуй ещё раз' });
+  } finally {
+    client?.release();
   }
 });
 
