@@ -44,6 +44,7 @@ const schemaReady = (async () => {
     await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS place_lon DOUBLE PRECISION`);
     await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS altitude_m INT`);
     await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS camp BOOLEAN NOT NULL DEFAULT FALSE`);
+  await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS total_km NUMERIC(6,2)`);
     console.log('Workouts schema OK (вторая тренировка)');
   } catch (err) {
     console.error('Workouts migration failed:', err.message);
@@ -59,6 +60,17 @@ async function getInternalUser(telegramId) {
 function hr(v) {
   const n = parseInt(v, 10);
   return n >= 30 && n <= 250 ? n : null;
+}
+
+// Общий объём за тренировку, км: «12», «12,5» → число 0.1…200, иначе null (тогда объём считается из записи)
+function cleanTotalKm(v) {
+  const n = Number(String(v ?? '').replace(',', '.').replace(/[^\d.]/g, ''));
+  return Number.isFinite(n) && n >= 0.1 && n <= 200 ? Math.round(n * 100) / 100 : null;
+}
+// Оценка 1–10 (самочувствие, RPE)
+function score10(v) {
+  const n = parseInt(v, 10);
+  return n >= 1 && n <= 10 ? n : null;
 }
 
 // Короткий текст: обрезаем пробелы и слишком длинные значения
@@ -102,6 +114,7 @@ function parseDuration(v) {
 function cleanExercises(list) {
   if (!Array.isArray(list)) return [];
   return list
+    .slice(0, 60)
     .map((e) => ({
       name: txt(e.name, 80),
       sets: parseInt(e.sets, 10) > 0 ? Math.min(parseInt(e.sets, 10), 100) : null,
@@ -140,7 +153,7 @@ function contentKey(w) {
   if (!w) return '';
   const comp = typeof w.competition === 'string' ? w.competition : JSON.stringify(w.competition || null);
   return JSON.stringify([
-    w.type, w.warmup, w.cooldown, w.feeling, w.rpe, w.notes, w.hr_avg, w.hr_max, w.hr_min, comp, w.start_time, w.end_time, w.place, w.altitude_m, !!w.camp,
+    w.type, w.warmup, w.cooldown, w.feeling, w.rpe, w.notes, w.hr_avg, w.hr_max, w.hr_min, w.total_km == null ? null : Number(w.total_km), comp, w.start_time, w.end_time, w.place, w.altitude_m, !!w.camp,
     (w.sets || []).map((x) => [x.distance_m, x.duration_s, x.reps, x.time_or_pace, x.rest_between]),
     (w.exercises || []).map((x) => [x.name, x.sets, x.reps, x.weight]),
   ]);
@@ -314,9 +327,11 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const { date, type, warmup, cooldown, feeling, rpe, notes, visibility } = req.body;
+  const { date, type, visibility } = req.body;
+  const warmup = txt(req.body.warmup, 1000), cooldown = txt(req.body.cooldown, 1000), notes = txt(req.body.notes, 2000);
+  const feeling = score10(req.body.feeling), rpe = score10(req.body.rpe);
   const isTraining = type === 'training';
-  const sets = isTraining && Array.isArray(req.body.sets) ? req.body.sets : [];
+  const sets = isTraining && Array.isArray(req.body.sets) ? req.body.sets.slice(0, 60) : [];
   const exercises = isTraining ? cleanExercises(req.body.exercises) : [];
   const hrAvg = isTraining ? hr(req.body.hr_avg) : null;
   const hrMax = isTraining ? hr(req.body.hr_max) : null;
@@ -385,7 +400,9 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     const visibleTo = await saveVisibleTo(client, workout.id, user.id, workout.visibility, req.body.visible_to);
     const startTime = isTraining ? cleanTime(req.body.start_time) : null;
     const endTime = isTraining ? cleanTime(req.body.end_time) : null;
-    await client.query('UPDATE workouts SET start_time = $1, end_time = $2 WHERE id = $3', [startTime, endTime, workout.id]);
+    const totalKm = isTraining ? cleanTotalKm(req.body.total_km) : null;
+    await client.query('UPDATE workouts SET start_time = $1, end_time = $2, total_km = $4 WHERE id = $3', [startTime, endTime, workout.id, totalKm]);
+    workout.total_km = totalKm;
     workout.start_time = startTime; workout.end_time = endTime;
     const place = cleanPlace(req.body, isTraining);
     await savePlace(client, workout.id, place);
@@ -437,9 +454,11 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const { type, warmup, cooldown, feeling, rpe, notes, visibility } = req.body;
+  const { type, visibility } = req.body;
+  const warmup = txt(req.body.warmup, 1000), cooldown = txt(req.body.cooldown, 1000), notes = txt(req.body.notes, 2000);
+  const feeling = score10(req.body.feeling), rpe = score10(req.body.rpe);
   const isTraining = type === 'training';
-  const sets = isTraining && Array.isArray(req.body.sets) ? req.body.sets : [];
+  const sets = isTraining && Array.isArray(req.body.sets) ? req.body.sets.slice(0, 60) : [];
   const exercises = isTraining ? cleanExercises(req.body.exercises) : [];
   const hrAvg = isTraining ? hr(req.body.hr_avg) : null;
   const hrMax = isTraining ? hr(req.body.hr_max) : null;
@@ -470,7 +489,7 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
     const visibleTo = await saveVisibleTo(client, updated.rows[0].id, user.id, updated.rows[0].visibility, req.body.visible_to);
     const startTime = isTraining ? cleanTime(req.body.start_time) : null;
     const endTime = isTraining ? cleanTime(req.body.end_time) : null;
-    await client.query('UPDATE workouts SET start_time = $1, end_time = $2 WHERE id = $3', [startTime, endTime, updated.rows[0].id]);
+    await client.query('UPDATE workouts SET start_time = $1, end_time = $2, total_km = $4 WHERE id = $3', [startTime, endTime, updated.rows[0].id, isTraining ? cleanTotalKm(req.body.total_km) : null]);
     await savePlace(client, updated.rows[0].id, cleanPlace(req.body, isTraining));
 
     await client.query('COMMIT');
