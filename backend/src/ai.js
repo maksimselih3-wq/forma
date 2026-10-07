@@ -458,6 +458,9 @@ function repsCount(r) {
 }
 export function volumeKm(w) {
   if (!w || w.type !== 'training') return 0;
+  // общий объём, который человек вписал сам, главнее любого подсчёта
+  const manual = Number(w.total_km);
+  if (manual > 0) return manual;
   let m = 0;
   (Array.isArray(w.sets) ? w.sets : []).forEach((s) => { m += (Number(s.distance_m) || 0) * repsCount(s.reps); });
   m += textMeters([w.warmup, w.cooldown].filter(Boolean).join('\n'));
