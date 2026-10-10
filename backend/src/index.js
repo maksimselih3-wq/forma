@@ -25,7 +25,7 @@ const app = express();
 
 // За Railway стоит один прокси: так req.ip — настоящий адрес клиента, а не адрес прокси
 // (без этого ограничитель запросов считал бы всех людей как одного).
-app.set('trust proxy', 1);
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS) || 1);
 app.disable('x-powered-by');
 
 app.use(cors());
