@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { query, dbReady, pool } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
-import { recalcStreak, getClientToday } from '../streak.js';
+import { recalcStreak, getClientToday, backfillDaysFor } from '../streak.js';
 import { remindersReady, setReminderEnabled, setNotifyPrefs } from '../reminders.js';
 import { rememberReferral, settleReferral, socialReady, pioneerNo } from '../social.js';
 
@@ -67,6 +67,7 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
     console.error('Streak recalc on login failed:', err.message);
   }
   try { user = { ...user, pioneer_no: await pioneerNo(user.id) }; } catch (e) { /* не страшно */ }
+  user = { ...user, backfill_days: backfillDaysFor(user) }; // за сколько дней назад можно заполнить новую запись
   // настройки уведомлений для экрана «Настройки»
   user = { ...user, digest_on_pref: user.digest_enabled ?? user.remind_enabled ?? true, partners_notify: user.partners_notify !== false };
 
