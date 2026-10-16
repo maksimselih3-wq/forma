@@ -690,8 +690,8 @@ async function callGemini({ model, maxTokens, system, messages }) {
     catch (e) {
       lastErr = e;
       if (e.aiDown) throw e; // ключ не работает — запасная модель не поможет
-      if (![404, 429, 500, 502, 503, 504].includes(e.status)) throw e;
-      console.warn(`Gemini ${gModel} недоступна (${e.status}), пробую следующую`);
+      if (![400, 404, 429, 500, 502, 503, 504].includes(e.status)) throw e;
+      console.warn(`Gemini ${gModel} недоступна (${e.status}: ${String(e.message).slice(0, 200)}), пробую следующую`);
     }
   }
   throw lastErr;
@@ -718,7 +718,7 @@ async function geminiOnce(gModel, body) {
     if (!response.ok) {
       const errText = await response.text();
       // некоторые модели не принимают thinkingBudget: 0 — пробуем без него
-      if (withThinkingOff && response.status === 400 && /thinking/i.test(errText)) { withThinkingOff = false; continue; }
+      if (withThinkingOff && response.status === 400) { withThinkingOff = false; continue; } // любая 400 — пробуем без thinkingConfig (у новых моделей он другой)
       if (attempt < 1 && [429, 500, 502, 503, 504].includes(response.status)) {
         await new Promise((r) => setTimeout(r, 1500));
         continue;
