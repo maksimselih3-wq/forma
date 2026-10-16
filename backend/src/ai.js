@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { query } from './db.js';
 import { takeQuota, refundQuota } from './aiQuota.js';
+import { markAiDown, markAiUp } from './aiGuard.js';
 dotenv.config();
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -672,9 +673,12 @@ async function callClaude({ model, maxTokens, system, messages }) {
         await new Promise((r) => setTimeout(r, 1500));
         continue;
       }
-      throw new Error(`Claude API error: ${response.status} ${errText}`);
+      const apiErr = new Error(`Claude API error: ${response.status} ${errText}`);
+      if (response.status === 401 || response.status === 403) { apiErr.aiDown = true; markAiDown(); }
+      throw apiErr;
     }
 
+    markAiUp();
     const data = await response.json();
     const textBlock = data.content.find((b) => b.type === 'text');
     return textBlock ? textBlock.text : null;
