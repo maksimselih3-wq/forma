@@ -19,6 +19,7 @@ import partnerRoutes from './routes/partners.js';
 import coachRoutes from './routes/coach.js';
 import geoRoutes from './routes/geo.js';
 import healthRoutes from './routes/health.js';
+import stravaRoutes, { ensureStravaWebhook } from './routes/strava.js';
 
 dotenv.config();
 
@@ -37,7 +38,7 @@ app.use('/api', rateLimit({
   windowMs: 60_000,
   max: 600, // с запасом: одна загрузка ленты тянет десятки картинок-аватарок
   anonMax: 120,
-  skip: (req) => req.path === '/bot/webhook',
+  skip: (req) => req.path === '/bot/webhook' || req.path === '/strava/webhook',
 }));
 
 // «Здоровье» принимает фото еды и бланков анализов — им нужен запас по размеру.
@@ -68,6 +69,7 @@ app.use('/api/chat', protectAsync(chatRoutes));
 app.use('/api/bot', protectAsync(botRoutes)); // Telegram-бот: приветствие на /start и оформление
 app.use('/api/partners', protectAsync(partnerRoutes)); // совместные пробежки: поиск напарников в своём городе
 app.use('/api/coach', protectAsync(coachRoutes)); // кабинет тренера: команда, спортсмен, сводка недели, задания
+app.use('/api/strava', protectAsync(stravaRoutes)); // подключение Strava: тренировки сами попадают в дневник
 app.use('/api/geo', protectAsync(geoRoutes)); // место тренировки: поиск и высота над уровнем моря
 app.use('/api/asset', protectAsync(assetRoutes)); // скрипт Telegram, шрифты, картинки подарков — для работы в России без VPN
 
@@ -88,4 +90,8 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  // Подписка на вебхук Strava: сервер уже слушает порт, так что проверка от Strava пройдёт
+  setTimeout(() => ensureStravaWebhook().catch((e) => console.error('Strava webhook:', e.message)), 8000);
+});
