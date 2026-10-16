@@ -92,7 +92,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   try {
     // Берём записи целиком — с разминкой, повторами, силовой/ОФП и заминкой
     const result = await query(
-      `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date - 30 ORDER BY w.date ASC`,
+      `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date - 30 AND COALESCE(w.source, '') <> 'strava' ORDER BY w.date ASC`,
       [user.id, today]
     );
 
