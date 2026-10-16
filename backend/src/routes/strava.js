@@ -232,7 +232,7 @@ export async function importActivity(user, a, { quiet = false } = {}) {
     if (same.rows.length) {
       await query(`UPDATE workouts SET hr_avg = COALESCE($1, hr_avg), hr_max = COALESCE($2, hr_max),
         start_time = COALESCE($3, start_time), end_time = COALESCE($4, end_time), total_km = COALESCE($5, total_km)
-        WHERE id = $6`, [hrAvg, hrMax, t.start, t.end, km, same.rows[0].id]);
+        WHERE id = $6 AND source = 'strava'`, [hrAvg, hrMax, t.start, t.end, km, same.rows[0].id]);
       return 'updated';
     }
 
@@ -247,10 +247,8 @@ export async function importActivity(user, a, { quiet = false } = {}) {
         if (w.type !== 'training' || w.strava_activity_id) continue;
         const have = Number(w.total_km) || Number(w.sets_m) / 1000;
         if (have > 0 && Math.abs(have - km) <= Math.max(0.5, km * 0.15)) {
-          await query(`UPDATE workouts SET strava_activity_id = $1, source = COALESCE(source, 'manual+strava'),
-            hr_avg = COALESCE(hr_avg, $2), hr_max = COALESCE(hr_max, $3), start_time = COALESCE(start_time, $4),
-            end_time = COALESCE(end_time, $5), total_km = COALESCE(total_km, $6) WHERE id = $7`,
-            [a.id, hrAvg, hrMax, t.start, t.end, km, w.id]);
+          // только отмечаем, что эта тренировка уже есть: данные Strava в ручную запись не копируем
+          await query(`UPDATE workouts SET strava_activity_id = $1, source = COALESCE(source, 'manual+strava') WHERE id = $2`, [a.id, w.id]);
           return 'linked';
         }
       }
