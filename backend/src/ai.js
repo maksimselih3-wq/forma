@@ -114,7 +114,7 @@ export async function goalsFacts(userId) {
   const ws = need
     ? (await query(`SELECT w.type, w.warmup, w.cooldown, w.competition,
           COALESCE((SELECT json_agg(s.*) FROM workout_sets s WHERE s.workout_id = w.id), '[]') AS sets
-        FROM workouts w WHERE w.user_id = $1 AND to_char(w.date, 'YYYY-MM') = $2`, [userId, month])).rows
+        FROM workouts w WHERE w.user_id = $1 AND to_char(w.date, 'YYYY-MM') = $2 AND COALESCE(w.source, '') <> 'strava'`, [userId, month])).rows
     : [];
   const km = Math.round(ws.reduce((a, w) => a + volumeKm(w), 0) * 10) / 10;
   const cnt = ws.filter((w) => w.type === 'training').length;
