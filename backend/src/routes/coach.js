@@ -133,7 +133,7 @@ async function teamStats(ids, today) {
   const from = addDays(today, -21) < prevMonday ? addDays(today, -21) : prevMonday;
   if (!ids.length) return { monday, byId: {} };
   const [ws, lasts, checks] = await Promise.all([
-    query(`${WORKOUT_SELECT} WHERE w.user_id = ANY($1::int[]) AND w.date >= $2::date AND w.date <= $3::date
+    query(`${WORKOUT_SELECT} WHERE w.user_id = ANY($1::int[]) AND w.date >= $2::date AND w.date <= $3::date AND COALESCE(w.source, '') <> 'strava'
            ORDER BY w.date DESC, w.session DESC`, [ids, from, today]),
     query(`SELECT DISTINCT ON (user_id) user_id, to_char(date, 'YYYY-MM-DD') AS date FROM workouts
            WHERE user_id = ANY($1::int[]) AND date <= $2::date ORDER BY user_id, date DESC, session DESC`, [ids, today]),
@@ -261,7 +261,7 @@ router.get('/groups/:id/members/:uid', async (req, res) => {
   if (!a) return res.status(404).json({ error: 'Спортсмен не в группе' });
   const today = getClientToday(req);
   const { monday, byId } = await teamStats([a.id], today);
-  const w = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date AND w.date <= $3::date`, [a.id, monday, addDays(monday, 6)]);
+  const w = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date AND w.date <= $3::date AND COALESCE(w.source, '') <> 'strava'`, [a.id, monday, addDays(monday, 6)]);
   const days = [];
   for (let i = 0; i < 7; i++) {
     const d = addDays(monday, i);
@@ -288,7 +288,7 @@ router.post('/groups/:id/members/:uid/fom', async (req, res) => {
   if (!a) return res.status(404).json({ error: 'Спортсмен не в группе' });
   const today = getClientToday(req);
   const { byId } = await teamStats([a.id], today);
-  const ws = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date > $2::date - 14 AND w.date <= $2::date ORDER BY w.date DESC, w.session DESC`, [a.id, today]);
+  const ws = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date > $2::date - 14 AND w.date <= $2::date AND COALESCE(w.source, '') <> 'strava' ORDER BY w.date DESC, w.session DESC`, [a.id, today]);
   const trainings = ws.rows.filter((x) => x.type === 'training');
   const alt = trainings.length ? altitudeFacts(trainings[0], trainings.slice(1)) : '';
   if (!(await takeQuota(req.me.id, 'coach')).ok) return res.status(429).json({ error: QUOTA_MESSAGES.coach });
