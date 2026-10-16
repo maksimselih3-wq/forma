@@ -1,3 +1,4 @@
+import { AI_DOWN_MESSAGE } from '../aiGuard.js';
 import { Router } from 'express';
 import { query, pool, WORKOUT_SELECT, dbReady } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
@@ -314,6 +315,7 @@ router.post('/parse', requireTelegramAuth, async (req, res) => {
     res.json({ parsed });
   } catch (err) {
     console.error('Smart input failed:', err.message);
+    if (err?.aiDown) return res.status(503).json({ error: AI_DOWN_MESSAGE, ai_down: true });
     res.status(500).json({ error: 'Fom не смог разобрать текст. Попробуй написать чуть иначе.' });
   }
 });
