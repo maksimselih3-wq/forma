@@ -12,8 +12,9 @@ const MODEL = 'claude-haiku-4-5-20251001'; // дёшево и быстро — �
 // Переключается переменной AI_PROVIDER в Railway, код менять не нужно.
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'claude').toLowerCase();
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 const GEMINI_MODEL_INSIGHTS = process.env.GEMINI_MODEL_INSIGHTS || GEMINI_MODEL;
+const GEMINI_FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS || 'gemini-3.8-flash-lite,gemini-2.5-flash-lite').split(',').map((m) => m.trim());
 
 // Кто такой Fom — общее описание для всех запросов к ИИ
 const FOM_INTRO = `Тебя зовут Fom — ты помощник спортсмена-легкоатлета внутри тренировочного дневника. Если спросят, как тебя зовут, — отвечай, что ты Fom. Не подписывай сообщения и не представляйся без повода.
@@ -663,7 +664,9 @@ function toGeminiParts(content) {
 
 async function callGemini({ model, maxTokens, system, messages }) {
   if (!GEMINI_API_KEY) { const e = new Error('GEMINI_API_KEY is not set'); e.aiDown = true; markAiDown(); throw e; }
-  const gModel = model === MODEL_INSIGHTS ? GEMINI_MODEL_INSIGHTS : GEMINI_MODEL;
+  const mainModel = model === MODEL_INSIGHTS ? GEMINI_MODEL_INSIGHTS : GEMINI_MODEL;
+  // если основная модель перегружена или недоступна — пробуем запасные (GEMINI_FALLBACK_MODELS через запятую)
+  const models = [mainModel, ...GEMINI_FALLBACK_MODELS.filter((m) => m && m !== mainModel)];
 
   // Gemini ждёт чередование «пользователь — модель»: подряд идущие реплики одной роли склеиваем
   const contents = [];
@@ -681,6 +684,20 @@ async function callGemini({ model, maxTokens, system, messages }) {
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
 
+  let lastErr;
+  for (const gModel of models) {
+    try { return await geminiOnce(gModel, body); }
+    catch (e) {
+      lastErr = e;
+      if (e.aiDown) throw e; // ключ не работает — запасная модель не поможет
+      if (![404, 429, 500, 502, 503, 504].includes(e.status)) throw e;
+      console.warn(`Gemini ${gModel} недоступна (${e.status}), пробую следующую`);
+    }
+  }
+  throw lastErr;
+}
+
+async function geminiOnce(gModel, body) {
   let withThinkingOff = true;
   for (let attempt = 0; ; attempt++) {
     const cfg = { ...body.generationConfig };
@@ -702,11 +719,12 @@ async function callGemini({ model, maxTokens, system, messages }) {
       const errText = await response.text();
       // некоторые модели не принимают thinkingBudget: 0 — пробуем без него
       if (withThinkingOff && response.status === 400 && /thinking/i.test(errText)) { withThinkingOff = false; continue; }
-      if (attempt < 2 && [429, 500, 502, 503, 504].includes(response.status)) {
-        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      if (attempt < 1 && [429, 500, 502, 503, 504].includes(response.status)) {
+        await new Promise((r) => setTimeout(r, 1500));
         continue;
       }
       const apiErr = new Error(`Gemini API error: ${response.status} ${errText.slice(0, 400)}`);
+      apiErr.status = response.status;
       if (response.status === 401 || response.status === 403 || (response.status === 400 && /API key not valid|API_KEY_INVALID/i.test(errText))) {
         apiErr.aiDown = true; markAiDown();
       }
