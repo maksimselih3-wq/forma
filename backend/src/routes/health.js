@@ -152,7 +152,7 @@ function testOut(t) {
 // Нагрузка за 3 недели до сдачи анализа — готовые цифры для Fom
 async function loadBefore(uid, date) {
   const from = addDays(date, -21);
-  const ws = (await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date AND w.date <= $3::date ORDER BY w.date DESC`, [uid, from, date])).rows;
+  const ws = (await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date AND w.date <= $3::date AND COALESCE(w.source, '') <> 'strava' ORDER BY w.date DESC`, [uid, from, date])).rows;
   const tr = ws.filter((w) => w.type === 'training');
   if (!tr.length) return '';
   const km = tr.reduce((a, w) => a + volumeKm(w), 0);
@@ -258,7 +258,7 @@ router.delete('/blood/:id', async (req, res) => {
 async function dayTargets(uid, date) {
   const kg = await currentWeight(uid);
   const goal = await weightGoal(uid, date);
-  const ws = (await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date = $2 AND w.type = 'training'`, [uid, date])).rows;
+  const ws = (await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date = $2 AND w.type = 'training' AND COALESCE(w.source, '') <> 'strava'`, [uid, date])).rows;
   const km = ws.reduce((a, w) => a + volumeKm(w), 0);
   const rpe = Math.max(0, ...ws.map((w) => Number(w.rpe) || 0));
   const load = !ws.length ? 'rest' : (rpe >= 8 || km >= 15 || ws.length > 1) ? 'high' : (rpe >= 5 || km >= 8) ? 'moderate' : 'light';
