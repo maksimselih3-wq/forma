@@ -169,9 +169,10 @@ async function loadWorkout(id) {
 async function buildFeedback(userId, workoutId, today) {
   const w = await loadWorkout(workoutId);
   if (!w || w.type !== 'training') return null;
+  if (w.source === 'strava') return null; // данные Strava в ИИ не отправляем
   const date = String(w.date).slice(0, 10);
   const recentRes = await query(
-    `${WORKOUT_SELECT} WHERE w.user_id = $1 AND (w.date < $2 OR (w.date = $2 AND w.session < $3))
+    `${WORKOUT_SELECT} WHERE w.user_id = $1 AND (w.date < $2 OR (w.date = $2 AND w.session < $3)) AND COALESCE(w.source, '') <> 'strava'
      ORDER BY w.date DESC, w.session DESC LIMIT 7`,
     [userId, date, w.session || 1]
   );
@@ -180,7 +181,7 @@ async function buildFeedback(userId, workoutId, today) {
   if (sig) {
     try {
       const prev = await query(
-        `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.id <> $2 AND w.type = 'training' AND w.date >= $3::date - 120
+        `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.id <> $2 AND w.type = 'training' AND w.date >= $3::date - 120 AND COALESCE(w.source, '') <> 'strava'
          AND w.date <= $3::date ORDER BY w.date DESC LIMIT 60`,
         [userId, w.id, date]
       );
@@ -482,7 +483,7 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
       `UPDATE workouts SET type=$1, warmup=$2, cooldown=$3, feeling=$4, rpe=$5, notes=$6, visibility=$7,
          hr_avg=$8, hr_max=$9, hr_min=$10, competition=$11
        WHERE id=$12 AND user_id=$13 RETURNING *`,
-      [type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, cleanVisibility(visibility), hrAvg, hrMax, hrMin, competitionJson, req.params.id, user.id]
+      [type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, before.rows[0]?.source === 'strava' ? 'private' : cleanVisibility(visibility), hrAvg, hrMax, hrMin, competitionJson, req.params.id, user.id]
     );
 
     if (updated.rows.length === 0) {
@@ -504,7 +505,7 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
     let aiFeedback = after?.ai_feedback ?? null;
     // 'updated' — Fom написал новый отзыв; 'same' — содержание не менялось; 'failed' — Fom не ответил
     let feedbackStatus = 'same';
-    if (isTraining && (contentKey(before.rows[0]) !== contentKey(after) || !aiFeedback)) {
+    if (isTraining && after?.source !== 'strava' && (contentKey(before.rows[0]) !== contentKey(after) || !aiFeedback)) {
       const fresh = await buildFeedback(user.id, updated.rows[0].id, getClientToday(req));
       feedbackStatus = fresh ? 'updated' : 'failed';
       if (fresh) aiFeedback = fresh;
@@ -524,8 +525,9 @@ router.post('/:id/feedback', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   await schemaReady;
-  const w = await query('SELECT id, type FROM workouts WHERE id = $1 AND user_id = $2', [parseInt(req.params.id, 10) || 0, user.id]);
+  const w = await query('SELECT id, type, source FROM workouts WHERE id = $1 AND user_id = $2', [parseInt(req.params.id, 10) || 0, user.id]);
   if (!w.rows[0]) return res.status(404).json({ error: 'Запись не найдена' });
+  if (w.rows[0].source === 'strava') return res.status(400).json({ error: 'К тренировкам из Strava Fom отзывы не пишет: так требуют правила Strava. Свои заметки добавить можно 🙂' });
   if (w.rows[0].type !== 'training') return res.status(400).json({ error: 'Отзыв бывает только к тренировке' });
   const text = await buildFeedback(user.id, w.rows[0].id, getClientToday(req));
   if (!text) return res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
