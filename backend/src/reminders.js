@@ -162,7 +162,7 @@ export async function sendWeeklyDigests(send, { force = false, onlyTelegramId = 
       if (!claim.rows.length) continue;
     }
     try {
-      const w = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date BETWEEN $2::date AND $3::date ORDER BY w.date, w.session`, [u.id, monday, sunday]);
+      const w = await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date BETWEEN $2::date AND $3::date AND COALESCE(w.source, '') <> 'strava' ORDER BY w.date, w.session`, [u.id, monday, sunday]);
       const text = await getWeeklyDigest(w.rows, await athleteContext(u.id), u.first_name || '');
       const res = await send(u.telegram_id, `📊 <b>Итоги недели от Fom</b>\n\n${escHtml(text)}`);
       if (res?.ok) sent++;
