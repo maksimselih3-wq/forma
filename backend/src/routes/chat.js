@@ -1,3 +1,4 @@
+import { AI_DOWN_MESSAGE } from '../aiGuard.js';
 import { Router } from 'express';
 import { query, WORKOUT_SELECT, dbReady } from '../db.js';
 import { isAdmin } from '../giveaway.js';
@@ -104,6 +105,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       await query('UPDATE chat_usage SET count = GREATEST(0, count - 1) WHERE user_id = $1 AND day = $2::date', [user.id, mskToday()]).catch(() => {});
     }
     console.error('Chat failed:', err.message);
+    if (err?.aiDown) return res.status(503).json({ error: AI_DOWN_MESSAGE, ai_down: true });
     res.status(500).json({ error: 'Не удалось получить ответ от Fom' });
   }
 });
