@@ -1,3 +1,4 @@
+import { AI_DOWN_MESSAGE } from '../aiGuard.js';
 import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
@@ -47,6 +48,7 @@ router.get('/', requireTelegramAuth, async (req, res) => {
     res.json({ insight, workoutsCount: result.rows.length, period });
   } catch (err) {
     console.error('Insight generation failed:', err.message);
+    if (err?.aiDown) return res.status(503).json({ error: AI_DOWN_MESSAGE, ai_down: true });
     res.status(500).json({ error: 'Не удалось получить разбор от Fom' });
   }
 });
