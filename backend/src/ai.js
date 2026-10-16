@@ -690,7 +690,11 @@ async function callGemini({ model, maxTokens, system, messages }) {
     try { return await geminiOnce(gModel, body); }
     catch (e) {
       lastErr = e;
-      if ([429, 500, 502, 503, 504].includes(e.status)) coolingUntil.set(gModel, Date.now() + 60_000);
+      if ([429, 500, 502, 503, 504].includes(e.status)) {
+        // закончился лимит (часто дневной на бесплатном тарифе) — не мучаем модель 10 минут; перегрузка — минута
+        const quota = e.status === 429 && /quota|exceeded/i.test(String(e.message));
+        coolingUntil.set(gModel, Date.now() + (quota ? 600_000 : 60_000));
+      }
       if (e.aiDown) throw e; // ключ не работает — запасная модель не поможет
       if (![400, 404, 429, 500, 502, 503, 504].includes(e.status)) throw e;
       console.warn(`Gemini ${gModel} недоступна (${e.status}: ${String(e.message).slice(0, 200)}), пробую следующую`);
