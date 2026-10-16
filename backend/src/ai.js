@@ -8,6 +8,13 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL_INSIGHTS = process.env.MODEL_INSIGHTS || 'claude-sonnet-5'; // для разбора за период нужна модель посерьёзнее одной тренировки
 const MODEL = 'claude-haiku-4-5-20251001'; // дёшево и быстро — идеально для разбора одной тренировки
 
+// Какой ИИ отвечает: 'claude' (по умолчанию) или 'gemini' (запасной, пока Claude недоступен).
+// Переключается переменной AI_PROVIDER в Railway, код менять не нужно.
+const AI_PROVIDER = (process.env.AI_PROVIDER || 'claude').toLowerCase();
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const GEMINI_MODEL_INSIGHTS = process.env.GEMINI_MODEL_INSIGHTS || GEMINI_MODEL;
+
 // Кто такой Fom — общее описание для всех запросов к ИИ
 const FOM_INTRO = `Тебя зовут Fom — ты помощник спортсмена-легкоатлета внутри тренировочного дневника. Если спросят, как тебя зовут, — отвечай, что ты Fom. Не подписывай сообщения и не представляйся без повода.
 
@@ -643,7 +650,78 @@ export function describeWorkout(w) {
   return `${head}: тренировка — ${parts.join(' | ')}`;
 }
 
+// --- Gemini: те же запросы, что у Claude (текст, фото, PDF), в формате Google ---
+function toGeminiParts(content) {
+  if (typeof content === 'string') return [{ text: content }];
+  const parts = [];
+  for (const b of Array.isArray(content) ? content : []) {
+    if (b.type === 'text') parts.push({ text: b.text });
+    else if (b.source?.type === 'base64') parts.push({ inlineData: { mimeType: b.source.media_type, data: b.source.data } });
+  }
+  return parts;
+}
+
+async function callGemini({ model, maxTokens, system, messages }) {
+  if (!GEMINI_API_KEY) { const e = new Error('GEMINI_API_KEY is not set'); e.aiDown = true; markAiDown(); throw e; }
+  const gModel = model === MODEL_INSIGHTS ? GEMINI_MODEL_INSIGHTS : GEMINI_MODEL;
+
+  // Gemini ждёт чередование «пользователь — модель»: подряд идущие реплики одной роли склеиваем
+  const contents = [];
+  for (const m of messages) {
+    const role = m.role === 'assistant' ? 'model' : 'user';
+    const parts = toGeminiParts(m.content);
+    if (!parts.length) continue;
+    if (contents.length && contents[contents.length - 1].role === role) contents[contents.length - 1].parts.push(...parts);
+    else contents.push({ role, parts });
+  }
+  while (contents.length && contents[0].role === 'model') contents.shift(); // диалог должен начинаться с человека
+  const body = {
+    contents,
+    generationConfig: { maxOutputTokens: Math.max(maxTokens, 1000), temperature: 0.7 },
+  };
+  if (system) body.systemInstruction = { parts: [{ text: system }] };
+
+  let withThinkingOff = true;
+  for (let attempt = 0; ; attempt++) {
+    const cfg = { ...body.generationConfig };
+    if (withThinkingOff) cfg.thinkingConfig = { thinkingBudget: 0 }; // без «размышлений»: быстрее и дешевле, ответ не обрезается
+    let response;
+    try {
+      response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(gModel)}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+        body: JSON.stringify({ ...body, generationConfig: cfg }),
+        signal: AbortSignal.timeout(60000),
+      });
+    } catch (err) {
+      if (attempt === 0 && err?.name !== 'TimeoutError') { await new Promise((r) => setTimeout(r, 800)); continue; }
+      throw err;
+    }
+
+    if (!response.ok) {
+      const errText = await response.text();
+      // некоторые модели не принимают thinkingBudget: 0 — пробуем без него
+      if (withThinkingOff && response.status === 400 && /thinking/i.test(errText)) { withThinkingOff = false; continue; }
+      if (attempt < 2 && [429, 500, 502, 503, 504].includes(response.status)) {
+        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        continue;
+      }
+      const apiErr = new Error(`Gemini API error: ${response.status} ${errText.slice(0, 400)}`);
+      if (response.status === 401 || response.status === 403 || (response.status === 400 && /API key not valid|API_KEY_INVALID/i.test(errText))) {
+        apiErr.aiDown = true; markAiDown();
+      }
+      throw apiErr;
+    }
+
+    markAiUp();
+    const data = await response.json();
+    const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
+    return text || null;
+  }
+}
+
 async function callClaude({ model, maxTokens, system, messages }) {
+  if (AI_PROVIDER === 'gemini') return callGemini({ model, maxTokens, system, messages });
   const body = { model, max_tokens: maxTokens, messages };
   if (system) body.system = system;
 
