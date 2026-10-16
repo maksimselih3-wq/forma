@@ -14,7 +14,7 @@ const AI_PROVIDER = (process.env.AI_PROVIDER || 'claude').toLowerCase();
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 const GEMINI_MODEL_INSIGHTS = process.env.GEMINI_MODEL_INSIGHTS || GEMINI_MODEL;
-const GEMINI_FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS || 'gemini-3.8-flash-lite,gemini-2.5-flash-lite').split(',').map((m) => m.trim());
+const GEMINI_FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS || 'gemini-3.5-flash-lite,gemini-3.5-flash').split(',').map((m) => m.trim());
 
 // Кто такой Fom — общее описание для всех запросов к ИИ
 const FOM_INTRO = `Тебя зовут Fom — ты помощник спортсмена-легкоатлета внутри тренировочного дневника. Если спросят, как тебя зовут, — отвечай, что ты Fom. Не подписывай сообщения и не представляйся без повода.
