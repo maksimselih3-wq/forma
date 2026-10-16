@@ -570,14 +570,14 @@ router.get('/groups/:id', async (req, res) => {
   const monday = weekStart(req);
   const members = await query(
     `SELECT ${PUBLIC_USER}, m.role,
-       (SELECT count(*)::int FROM workouts w WHERE w.user_id = u.id AND w.type = 'training' AND w.date >= $2::date) AS week_trainings,
+       (SELECT count(*)::int FROM workouts w WHERE w.user_id = u.id AND w.type = 'training' AND w.date >= $2::date AND COALESCE(w.source, '') <> 'strava') AS week_trainings,
        (SELECT to_char(max(w.date), 'YYYY-MM-DD') FROM workouts w WHERE w.user_id = u.id) AS last_entry
      FROM group_members m JOIN users u ON u.id = m.user_id
      WHERE m.group_id = $1
      ORDER BY week_trainings DESC, u.current_streak DESC`, [gid, monday]);
   // километры недели — по той же формуле, что в приложении и у Fom (отрезки + км/м в разминке и заминке + старты)
   const weekW = await query(
-    `${WORKOUT_SELECT} WHERE w.user_id IN (SELECT user_id FROM group_members WHERE group_id = $1) AND w.date >= $2::date`,
+    `${WORKOUT_SELECT} WHERE w.user_id IN (SELECT user_id FROM group_members WHERE group_id = $1) AND w.date >= $2::date AND COALESCE(w.source, '') <> 'strava'`,
     [gid, monday]);
   const kmBy = {};
   for (const w of weekW.rows) kmBy[w.user_id] = (kmBy[w.user_id] || 0) + volumeKm(w);
@@ -603,7 +603,7 @@ router.get('/groups/:id/feed', async (req, res) => {
     `${WORKOUT_SELECT}
      WHERE w.user_id IN (SELECT user_id FROM group_members WHERE group_id = $1)
        AND (${visibleToSql('$2')} OR w.user_id = $2 OR $3)
-       AND w.date > CURRENT_DATE - 30
+       AND w.date > CURRENT_DATE - 30 AND COALESCE(w.source, '') <> 'strava'
      ORDER BY w.date DESC, w.id DESC LIMIT 40`, [gid, req.me.id, isCoach]);
   res.json({ workouts: await withSocial(r.rows, req.me.id) });
 });
@@ -618,7 +618,7 @@ router.get('/groups/:id/members/:uid', async (req, res) => {
   if (!inGroup.rows.length) return res.status(404).json({ error: 'Спортсмен не в группе' });
   const [user, workouts, checks] = await Promise.all([
     query(`SELECT ${PUBLIC_USER} FROM users u WHERE u.id = $1`, [uid]),
-    query(`${WORKOUT_SELECT} WHERE w.user_id = $1 ORDER BY w.date DESC, w.session LIMIT 40`, [uid]),
+    query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND COALESCE(w.source, '') <> 'strava' ORDER BY w.date DESC, w.session LIMIT 40`, [uid]),
     query(`SELECT to_char(date, 'YYYY-MM-DD') AS date, sleep_h, rest_hr, mood FROM morning_checks
            WHERE user_id = $1 AND date > CURRENT_DATE - 7 ORDER BY date DESC`, [uid]).catch(() => ({ rows: [] })),
   ]);
