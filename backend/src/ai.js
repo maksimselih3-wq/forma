@@ -686,9 +686,11 @@ async function callGemini({ model, maxTokens, system, messages }) {
 
   let lastErr;
   for (const gModel of models) {
+    if ((coolingUntil.get(gModel) || 0) > Date.now() && gModel !== models[models.length - 1]) continue; // перегружена минуту назад — не тратим время
     try { return await geminiOnce(gModel, body); }
     catch (e) {
       lastErr = e;
+      if ([429, 500, 502, 503, 504].includes(e.status)) coolingUntil.set(gModel, Date.now() + 60_000);
       if (e.aiDown) throw e; // ключ не работает — запасная модель не поможет
       if (![400, 404, 429, 500, 502, 503, 504].includes(e.status)) throw e;
       console.warn(`Gemini ${gModel} недоступна (${e.status}: ${String(e.message).slice(0, 200)}), пробую следующую`);
@@ -697,18 +699,24 @@ async function callGemini({ model, maxTokens, system, messages }) {
   throw lastErr;
 }
 
+// Как просить модель не «думать» долго. Разные поколения Gemini принимают разные настройки;
+// запоминаем, что сработало для модели, чтобы не тратить лишние запросы.
+const THINKING_VARIANTS = [{ thinkingBudget: 0 }, { thinkingLevel: 'minimal' }, { thinkingLevel: 'low' }, null];
+const thinkingChoice = new Map(); // модель -> индекс рабочего варианта
+const coolingUntil = new Map();   // модель -> до какого времени её пропускаем (после 503/429)
+
 async function geminiOnce(gModel, body) {
-  let withThinkingOff = true;
+  let vi = thinkingChoice.get(gModel) ?? 0;
   for (let attempt = 0; ; attempt++) {
     const cfg = { ...body.generationConfig };
-    if (withThinkingOff) cfg.thinkingConfig = { thinkingBudget: 0 }; // без «размышлений»: быстрее и дешевле, ответ не обрезается
+    if (THINKING_VARIANTS[vi]) cfg.thinkingConfig = THINKING_VARIANTS[vi];
     let response;
     try {
       response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(gModel)}:generateContent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
         body: JSON.stringify({ ...body, generationConfig: cfg }),
-        signal: AbortSignal.timeout(60000),
+        signal: AbortSignal.timeout(45000),
       });
     } catch (err) {
       if (attempt === 0 && err?.name !== 'TimeoutError') { await new Promise((r) => setTimeout(r, 800)); continue; }
@@ -717,12 +725,8 @@ async function geminiOnce(gModel, body) {
 
     if (!response.ok) {
       const errText = await response.text();
-      // некоторые модели не принимают thinkingBudget: 0 — пробуем без него
-      if (withThinkingOff && response.status === 400) { withThinkingOff = false; continue; } // любая 400 — пробуем без thinkingConfig (у новых моделей он другой)
-      if (attempt < 1 && [429, 500, 502, 503, 504].includes(response.status)) {
-        await new Promise((r) => setTimeout(r, 1500));
-        continue;
-      }
+      // 400: возможно, модель не принимает этот вариант настройки «размышлений» — пробуем следующий
+      if (response.status === 400 && vi < THINKING_VARIANTS.length - 1) { vi++; continue; }
       const apiErr = new Error(`Gemini API error: ${response.status} ${errText.slice(0, 400)}`);
       apiErr.status = response.status;
       if (response.status === 401 || response.status === 403 || (response.status === 400 && /API key not valid|API_KEY_INVALID/i.test(errText))) {
@@ -731,6 +735,7 @@ async function geminiOnce(gModel, body) {
       throw apiErr;
     }
 
+    thinkingChoice.set(gModel, vi);
     markAiUp();
     const data = await response.json();
     const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
