@@ -684,22 +684,32 @@ async function callGemini({ model, maxTokens, system, messages }) {
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
 
+  // До двух кругов по моделям: если Google перегружен (503), через пару секунд пробуем ещё раз
   let lastErr;
-  for (const gModel of models) {
-    if ((coolingUntil.get(gModel) || 0) > Date.now() && gModel !== models[models.length - 1]) continue; // перегружена минуту назад — не тратим время
-    try { return await geminiOnce(gModel, body); }
-    catch (e) {
-      lastErr = e;
-      if ([429, 500, 502, 503, 504].includes(e.status)) {
-        // закончился лимит (часто дневной на бесплатном тарифе) — не мучаем модель 10 минут; перегрузка — минута
+  for (let round = 0; round < 2; round++) {
+    if (round === 1) await new Promise((r) => setTimeout(r, 2500));
+    let transient = false; // была временная перегрузка — тогда второй круг имеет смысл
+    for (const gModel of models) {
+      const cooling = (coolingUntil.get(gModel) || 0) > Date.now();
+      if (cooling && round === 0 && gModel !== models[models.length - 1]) continue; // недавно упала — не тратим время
+      try { return await geminiOnce(gModel, body); }
+      catch (e) {
+        lastErr = e;
+        if (e.aiDown) throw e; // ключ не работает — запасная модель не поможет
+        if (![400, 404, 429, 500, 502, 503, 504].includes(e.status)) throw e;
         const quota = e.status === 429 && /quota|exceeded/i.test(String(e.message));
-        coolingUntil.set(gModel, Date.now() + (quota ? 600_000 : 60_000));
+        if (!quota && [429, 500, 502, 503, 504].includes(e.status)) transient = true;
+        if ([429, 500, 502, 503, 504].includes(e.status)) {
+          // дневной лимит кончился — модель отдыхает 10 минут; перегрузка — 15 секунд
+          coolingUntil.set(gModel, Date.now() + (quota ? 600_000 : 15_000));
+        }
+        console.warn(`Gemini ${gModel} недоступна (${e.status}: ${String(e.message).slice(0, 200)}), пробую следующую`);
       }
-      if (e.aiDown) throw e; // ключ не работает — запасная модель не поможет
-      if (![400, 404, 429, 500, 502, 503, 504].includes(e.status)) throw e;
-      console.warn(`Gemini ${gModel} недоступна (${e.status}: ${String(e.message).slice(0, 200)}), пробую следующую`);
     }
+    if (!transient) break; // лимит кончился или запрос не подходит — повтор через секунды не поможет
   }
+  // Все модели заняты или без лимита: людям показываем понятное «Fom настраивается», а не техническую ошибку
+  if ([429, 500, 502, 503, 504].includes(lastErr?.status)) { lastErr.aiDown = true; markAiDown(); }
   throw lastErr;
 }
 
