@@ -74,3 +74,17 @@ export async function recalcStreak(userId, today = serverToday()) {
 
   return { current, longest };
 }
+
+/**
+ * Сколько дней назад можно создать НОВУЮ запись.
+ * Новичок в первые 7 дней после регистрации заполняет дневник за прошлую неделю (7 дней назад),
+ * потом — только сегодня и вчера (1 день назад). Уже сделанные записи можно править за любой день.
+ * Числа меняются в Railway: BACKFILL_NEW_USER_DAYS (по умолчанию 7) и BACKFILL_DAYS (по умолчанию 1).
+ */
+export function backfillDaysFor(user) {
+  const newDays = Number(process.env.BACKFILL_NEW_USER_DAYS) || 7;
+  const days = Number(process.env.BACKFILL_DAYS) || 1;
+  const created = user?.created_at ? new Date(user.created_at).getTime() : NaN;
+  const ageDays = Number.isFinite(created) ? (Date.now() - created) / 86400000 : Infinity;
+  return ageDays < newDays ? newDays : days;
+}
