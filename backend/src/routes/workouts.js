@@ -2,7 +2,7 @@ import { AI_DOWN_MESSAGE } from '../aiGuard.js';
 import { Router } from 'express';
 import { query, pool, WORKOUT_SELECT, dbReady } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
-import { recalcStreak, getClientToday, isValidDate, daysBetween } from '../streak.js';
+import { recalcStreak, getClientToday, isValidDate, daysBetween, backfillDaysFor } from '../streak.js';
 import { getWorkoutFeedback, parseWorkoutText, athleteContext, workSignature } from '../ai.js';
 import { socialReady } from '../social.js';
 
@@ -377,9 +377,12 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       workout = upd.rows[0];
     } else {
       // новая запись — только за сегодня или вчера
-      if (daysBetween(date, today) > MAX_BACKFILL_DAYS) {
+      const maxBack = backfillDaysFor(user);
+      if (daysBetween(date, today) > maxBack) {
         await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Новые записи можно добавлять только за сегодня и вчера 🙂' });
+        return res.status(400).json({ error: maxBack > 1
+          ? `Новые записи можно добавлять не раньше чем за ${maxBack} дней назад 🙂`
+          : 'Новые записи можно добавлять только за сегодня и вчера 🙂' });
       }
       if (session === 2) {
         const first = await client.query(
