@@ -36,7 +36,7 @@ router.get('/', requireTelegramAuth, async (req, res) => {
 
   try {
     const result = await query(
-      `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date AND w.date <= $3::date ORDER BY w.date ASC`,
+      `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date AND w.date <= $3::date AND COALESCE(w.source, '') <> 'strava' ORDER BY w.date ASC`,
       [user.id, startDateStr, today]
     );
 
