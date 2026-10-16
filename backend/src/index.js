@@ -6,6 +6,7 @@ import { requireTelegramAuth } from './telegramAuth.js';
 import { rateLimit } from './rateLimit.js';
 import { protectAsync } from './asyncSafe.js';
 import { aiQuota } from './aiQuota.js';
+import { aiGuard } from './aiGuard.js';
 
 import authRoutes from './routes/auth.js';
 import workoutRoutes from './routes/workouts.js';
@@ -48,6 +49,11 @@ app.use(express.json());
 // Дневные лимиты на платные вызовы ИИ (см. aiQuota.js). Ставим ПЕРЕД роутерами: сначала проверка лимита,
 // потом обработчик. Отзыв о тренировке считается внутри ai.js (он пишется ещё и при сохранении записи),
 // а здесь для кнопки «Обновить отзыв» лимит только проверяем, чтобы человек сразу увидел понятное сообщение.
+// Если ключ ИИ не принимается — сразу понятное сообщение (см. aiGuard.js), лимиты людей не тратятся
+app.post('/api/chat', requireTelegramAuth, aiGuard);
+app.post('/api/workouts/parse', requireTelegramAuth, aiGuard);
+app.post('/api/workouts/:id/feedback', requireTelegramAuth, aiGuard);
+app.get('/api/insights', requireTelegramAuth, aiGuard);
 app.post('/api/workouts/parse', requireTelegramAuth, aiQuota('parse'));
 app.post('/api/workouts/:id/feedback', requireTelegramAuth, aiQuota('feedback', { consume: false }));
 app.get('/api/insights', requireTelegramAuth, aiQuota('insights'));
