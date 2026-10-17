@@ -169,7 +169,7 @@ async function loadWorkout(id) {
 async function buildFeedback(userId, workoutId, today) {
   const w = await loadWorkout(workoutId);
   if (!w || w.type !== 'training') return null;
-  if (w.source === 'strava') return null; // данные Strava в ИИ не отправляем
+  if (w.source === 'strava') return null; // нетронутая запись Strava: данные API в ИИ не отправляем
   const date = String(w.date).slice(0, 10);
   const recentRes = await query(
     `${WORKOUT_SELECT} WHERE w.user_id = $1 AND (w.date < $2 OR (w.date = $2 AND w.session < $3)) AND COALESCE(w.source, '') <> 'strava'
@@ -486,6 +486,11 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
       [type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, before.rows[0]?.source === 'strava' ? 'private' : cleanVisibility(visibility), hrAvg, hrMax, hrMin, competitionJson, req.params.id, user.id]
     );
 
+    // человек дополнил и сохранил запись из Strava — теперь она его, Strava её больше не перезаписывает
+    if (before.rows[0]?.source === 'strava') {
+      await client.query(`UPDATE workouts SET source = 'manual+strava' WHERE id = $1 AND user_id = $2`, [req.params.id, user.id]);
+    }
+
     if (updated.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Запись не найдена' });
@@ -527,7 +532,7 @@ router.post('/:id/feedback', requireTelegramAuth, async (req, res) => {
   await schemaReady;
   const w = await query('SELECT id, type, source FROM workouts WHERE id = $1 AND user_id = $2', [parseInt(req.params.id, 10) || 0, user.id]);
   if (!w.rows[0]) return res.status(404).json({ error: 'Запись не найдена' });
-  if (w.rows[0].source === 'strava') return res.status(400).json({ error: 'К тренировкам из Strava Fom отзывы не пишет: так требуют правила Strava. Свои заметки добавить можно 🙂' });
+  if (w.rows[0].source === 'strava') return res.status(400).json({ error: 'Это запись, которую Forma забрала из Strava. Дополни её и сохрани — тогда она станет твоей, и Fom напишет отзыв 🙂' });
   if (w.rows[0].type !== 'training') return res.status(400).json({ error: 'Отзыв бывает только к тренировке' });
   const text = await buildFeedback(user.id, w.rows[0].id, getClientToday(req));
   if (!text) return res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
