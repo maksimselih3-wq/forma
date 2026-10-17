@@ -8,13 +8,21 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL_INSIGHTS = process.env.MODEL_INSIGHTS || 'claude-sonnet-5'; // для разбора за период нужна модель посерьёзнее одной тренировки
 const MODEL = 'claude-haiku-4-5-20251001'; // дёшево и быстро — идеально для разбора одной тренировки
 
-// Какой ИИ отвечает: 'claude' (по умолчанию) или 'gemini' (запасной, пока Claude недоступен).
+// Какой ИИ отвечает: 'claude' (по умолчанию), 'gemini' или 'openai' (любой сервис с форматом OpenAI: OpenAI, DeepSeek, OpenRouter).
 // Переключается переменной AI_PROVIDER в Railway, код менять не нужно.
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'claude').toLowerCase();
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 const GEMINI_MODEL_INSIGHTS = process.env.GEMINI_MODEL_INSIGHTS || GEMINI_MODEL;
 const GEMINI_FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS || 'gemini-3.5-flash-lite,gemini-3.5-flash').split(',').map((m) => m.trim());
+
+// OpenAI-совместимый провайдер: OPENAI_API_KEY, OPENAI_BASE_URL (по умолчанию OpenAI), OPENAI_MODEL, OPENAI_MODEL_INSIGHTS, OPENAI_FALLBACK_MODELS
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+const OPENAI_MODEL_INSIGHTS = process.env.OPENAI_MODEL_INSIGHTS || OPENAI_MODEL;
+const OPENAI_FALLBACK_MODELS = (process.env.OPENAI_FALLBACK_MODELS || '').split(',').map((m) => m.trim()).filter(Boolean);
+const OPENAI_REASONING_EFFORT = process.env.OPENAI_REASONING_EFFORT || ''; // для рассуждающих моделей (gpt-5…): minimal/low/medium
 
 // Кто такой Fom — общее описание для всех запросов к ИИ
 const FOM_INTRO = `Тебя зовут Fom — ты помощник спортсмена-легкоатлета внутри тренировочного дневника. Если спросят, как тебя зовут, — отвечай, что ты Fom. Не подписывай сообщения и не представляйся без повода.
@@ -757,7 +765,80 @@ async function geminiOnce(gModel, body) {
   }
 }
 
+// --- OpenAI-совместимый провайдер: те же запросы в формате chat/completions ---
+function toOpenAiContent(content) {
+  if (typeof content === 'string') return content;
+  const parts = [];
+  for (const b of Array.isArray(content) ? content : []) {
+    if (b.type === 'text') parts.push({ type: 'text', text: b.text });
+    else if (b.type === 'image' && b.source?.type === 'base64') parts.push({ type: 'image_url', image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` } });
+    else if (b.type === 'document' && b.source?.type === 'base64') parts.push({ type: 'file', file: { filename: 'document.pdf', file_data: `data:${b.source.media_type};base64,${b.source.data}` } });
+  }
+  return parts;
+}
+
+async function callOpenAi({ model, maxTokens, system, messages }) {
+  if (!OPENAI_API_KEY) { const e = new Error('OPENAI_API_KEY is not set'); e.aiDown = true; markAiDown(); throw e; }
+  const main = model === MODEL_INSIGHTS ? OPENAI_MODEL_INSIGHTS : OPENAI_MODEL;
+  const models = [main, ...OPENAI_FALLBACK_MODELS.filter((m) => m !== main)];
+  const msgs = [];
+  if (system) msgs.push({ role: 'system', content: system });
+  for (const m of messages) {
+    const content = toOpenAiContent(m.content);
+    if (!content.length) continue;
+    msgs.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content });
+  }
+  const isOpenAi = /(^|\.)openai\.com$/.test(new URL(OPENAI_BASE_URL).hostname);
+
+  let lastErr;
+  for (const m of models) {
+    const body = { model: m, messages: msgs };
+    // у самого OpenAI новые модели принимают max_completion_tokens, у остальных (DeepSeek, OpenRouter) — max_tokens
+    if (isOpenAi) body.max_completion_tokens = Math.max(maxTokens, 1000); else body.max_tokens = Math.max(maxTokens, 1000);
+    if (OPENAI_REASONING_EFFORT) body.reasoning_effort = OPENAI_REASONING_EFFORT;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let res;
+      try {
+        res = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(60000),
+        });
+      } catch (err) {
+        lastErr = err;
+        if (attempt === 0 && err?.name !== 'TimeoutError') { await new Promise((r) => setTimeout(r, 800)); continue; }
+        break; // таймаут или сеть — пробуем следующую модель
+      }
+      if (res.ok) {
+        const data = await res.json();
+        markAiUp();
+        const text = data.choices?.[0]?.message?.content;
+        return (Array.isArray(text) ? text.map((p) => p.text || '').join('') : String(text || '')).trim() || null;
+      }
+      const errText = await res.text();
+      const err = new Error(`AI API error: ${res.status} ${errText.slice(0, 500)}`);
+      err.status = res.status;
+      lastErr = err;
+      // ключ не работает или закончились деньги — запасная модель не поможет
+      if ([401, 402, 403].includes(res.status) || (res.status === 429 && /insufficient_quota|billing|credit/i.test(errText))) { err.aiDown = true; markAiDown(); throw err; }
+      if (attempt === 0 && [429, 500, 502, 503, 504].includes(res.status)) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+      break; // 400/404 — модель не подошла, пробуем следующую
+    }
+  }
+  if (lastErr && !lastErr.aiDown && (!lastErr.status || [429, 500, 502, 503, 504].includes(lastErr.status))) { lastErr.aiDown = true; markAiDown(); }
+  throw lastErr || new Error('AI request failed');
+}
+
 async function callClaude({ model, maxTokens, system, messages }) {
+  if (AI_PROVIDER === 'openai') {
+    try { return await callOpenAi({ model, maxTokens, system, messages }); }
+    catch (e) {
+      // основной сервис недоступен (деньги кончились, перегрузка) — выручает Gemini, если ключ задан
+      if (GEMINI_API_KEY && (e.aiDown || e.status >= 500)) return callGemini({ model, maxTokens, system, messages });
+      throw e;
+    }
+  }
   if (AI_PROVIDER === 'gemini') return callGemini({ model, maxTokens, system, messages });
   const body = { model, max_tokens: maxTokens, messages };
   if (system) body.system = system;
