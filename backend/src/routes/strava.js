@@ -194,7 +194,7 @@ function setsFromLaps(a) {
   const speed = (l) => l.distance / (l.moving_time || l.elapsed_time);
   const sorted = laps.map(speed).sort((x, y) => x - y);
   const fast = sorted[Math.floor(sorted.length * 0.75)] || sorted[sorted.length - 1];
-  const isRest = (l, i) => laps.length >= 3 && i > 0 && speed(l) < fast * 0.7 && (l.elapsed_time || l.moving_time) <= 600;
+  const isRest = (l, i) => laps.length >= 3 && i > 0 && speed(l) < fast * 0.85 && speed(l) < speed(laps[i - 1]) && (l.elapsed_time || l.moving_time) <= 600;
 
   const out = [];
   laps.forEach((l, i) => {
@@ -203,15 +203,33 @@ function setsFromLaps(a) {
       return;
     }
     if (isRest(l, i) && out.length) return; // два отдыха подряд — второй не нужен
-    out.push({ distance_m: Math.round(l.distance), reps: 1, time_or_pace: hms(l.moving_time || l.elapsed_time), rest_between: null });
+    out.push({ distance_m: Math.round(l.distance), reps: 1, time_or_pace: hms(l.moving_time || l.elapsed_time), rest_between: null, _lap: l });
   });
-  return out.length ? out.slice(0, 80) : single;
+  if (!out.length) return single;
+
+  // Интервалы «по времени» (например 2 мин быстро): время почти одинаковое, а дистанция гуляет — пишем время, а темп отдельно
+  const T = (o) => o._lap.moving_time || o._lap.elapsed_time;
+  const med = [...out].map(T).sort((x, y) => x - y)[Math.floor(out.length / 2)];
+  const grp = out.filter((o) => Math.abs(T(o) - med) <= med * 0.15);
+  if (grp.length >= 3) {
+    const spread = (arr) => (Math.max(...arr) - Math.min(...arr)) / (arr.reduce((x, y) => x + y, 0) / arr.length);
+    const dS = spread(grp.map(T)), mS = spread(grp.map((o) => o.distance_m));
+    if (dS <= 0.05 && dS < mS * 0.6) {
+      for (const o of grp) {
+        const pace = T(o) / (o.distance_m / 1000);
+        o.duration_s = Math.round(T(o) / 5) * 5; // секундомер на часах «живёт» с точностью до секунд, округляем до 5 с
+        o.time_or_pace = `${hms(pace)}/км`;
+        o.distance_m = null;
+      }
+    }
+  }
+  return out.slice(0, 80).map(({ _lap, ...o }) => o);
 }
 
 async function saveSets(wid, sets) {
   for (let i = 0; i < sets.length; i++) {
-    await query(`INSERT INTO workout_sets (workout_id, order_index, distance_m, reps, time_or_pace, rest_between) VALUES ($1,$2,$3,$4,$5,$6)`,
-      [wid, i, sets[i].distance_m, sets[i].reps, sets[i].time_or_pace, sets[i].rest_between]);
+    await query(`INSERT INTO workout_sets (workout_id, order_index, distance_m, duration_s, reps, time_or_pace, rest_between) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [wid, i, sets[i].distance_m ?? null, sets[i].duration_s ?? null, sets[i].reps, sets[i].time_or_pace, sets[i].rest_between]);
   }
 }
 
