@@ -181,6 +181,40 @@ function describe(a) {
   return `Strava · ${label}${name ? ` — ${name}` : ''}${extra}`.slice(0, 600);
 }
 
+
+// Отрезки (laps) тренировки → подходы Forma. Быстрые отрезки — подходы, медленные короткие между ними — «отдых» предыдущего.
+function setsFromLaps(a) {
+  const total = Math.round(a.distance) || 0;
+  const single = [{ distance_m: total, reps: 1, time_or_pace: hms(a.moving_time || a.elapsed_time), rest_between: null }];
+  const laps = (Array.isArray(a.laps) ? a.laps : []).filter((l) => l && l.distance >= 10 && (l.moving_time || l.elapsed_time) > 0);
+  if (laps.length < 2 || laps.length > 150) return single;
+  const sum = laps.reduce((x, l) => x + l.distance, 0);
+  if (!total || Math.abs(sum - total) > Math.max(300, total * 0.1)) return single;
+
+  const speed = (l) => l.distance / (l.moving_time || l.elapsed_time);
+  const sorted = laps.map(speed).sort((x, y) => x - y);
+  const fast = sorted[Math.floor(sorted.length * 0.75)] || sorted[sorted.length - 1];
+  const isRest = (l, i) => laps.length >= 3 && i > 0 && speed(l) < fast * 0.7 && (l.elapsed_time || l.moving_time) <= 600;
+
+  const out = [];
+  laps.forEach((l, i) => {
+    if (isRest(l, i) && out.length && !out[out.length - 1].rest_between) {
+      out[out.length - 1].rest_between = hms(l.elapsed_time || l.moving_time);
+      return;
+    }
+    if (isRest(l, i) && out.length) return; // два отдыха подряд — второй не нужен
+    out.push({ distance_m: Math.round(l.distance), reps: 1, time_or_pace: hms(l.moving_time || l.elapsed_time), rest_between: null });
+  });
+  return out.length ? out.slice(0, 80) : single;
+}
+
+async function saveSets(wid, sets) {
+  for (let i = 0; i < sets.length; i++) {
+    await query(`INSERT INTO workout_sets (workout_id, order_index, distance_m, reps, time_or_pace, rest_between) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [wid, i, sets[i].distance_m, sets[i].reps, sets[i].time_or_pace, sets[i].rest_between]);
+  }
+}
+
 // Очередь по человеку: две тренировки одновременно не должны занять один номер за день
 const queues = new Map();
 function serial(userId, fn) {
@@ -233,6 +267,15 @@ export async function importActivity(user, a, { quiet = false } = {}) {
       await query(`UPDATE workouts SET hr_avg = COALESCE($1, hr_avg), hr_max = COALESCE($2, hr_max),
         start_time = COALESCE($3, start_time), end_time = COALESCE($4, end_time), total_km = COALESCE($5, total_km)
         WHERE id = $6 AND source = 'strava'`, [hrAvg, hrMax, t.start, t.end, km, same.rows[0].id]);
+      // запись ещё с одним общим подходом — раскладываем по отрезкам Strava (если человек уже правил подходы, не трогаем)
+      if (isRun && Array.isArray(a.laps)) {
+        const cur = await query(`SELECT w.source, (SELECT COUNT(*) FROM workout_sets WHERE workout_id = w.id) AS n FROM workouts w WHERE w.id = $1`, [same.rows[0].id]);
+        const sets = setsFromLaps(a);
+        if (cur.rows[0]?.source === 'strava' && Number(cur.rows[0].n) <= 1 && sets.length > 1) {
+          await query('DELETE FROM workout_sets WHERE workout_id = $1', [same.rows[0].id]);
+          await saveSets(same.rows[0].id, sets);
+        }
+      }
       return 'updated';
     }
 
@@ -271,8 +314,7 @@ export async function importActivity(user, a, { quiet = false } = {}) {
     const wid = ins.rows[0].id;
 
     if (isRun) {
-      await query(`INSERT INTO workout_sets (workout_id, order_index, distance_m, reps, time_or_pace) VALUES ($1, 0, $2, 1, $3)`,
-        [wid, Math.round(a.distance), hms(a.moving_time || a.elapsed_time)]);
+      await saveSets(wid, setsFromLaps(a));
     }
 
     try { await recalcStreak(user.id); } catch (e) { console.error('Strava: streak failed', e.message); }
@@ -301,7 +343,14 @@ async function syncRecent(userId, { quiet = false } = {}) {
   if (!r.ok || !Array.isArray(r.data)) return { ok: false, error: `strava_${r.status}` };
   const counts = { created: 0, linked: 0, updated: 0, skipped: 0 };
   for (const a of r.data.sort((x, y) => String(x.start_date).localeCompare(String(y.start_date)))) {
-    try { counts[await importActivity(user, a, { quiet })]++; } catch (e) { console.error('Strava import failed:', e.message); }
+    try {
+      let act = a;
+      if (RUN_TYPES.has(a.sport_type || a.type) && !Array.isArray(a.laps)) { // в списке отрезков нет — берём подробности
+        const d = await stravaFetch(`https://www.strava.com/api/v3/activities/${a.id}`, { headers: { Authorization: `Bearer ${token}` } });
+        if (d.ok && d.data) act = d.data;
+      }
+      counts[await importActivity(user, act, { quiet })]++;
+    } catch (e) { console.error('Strava import failed:', e.message); }
   }
   return { ok: true, ...counts };
 }
