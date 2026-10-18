@@ -1,4 +1,5 @@
 import { validateInitData } from './telegramAuth.js';
+import { peekSession } from './webAuth.js';
 
 /**
  * Простой ограничитель частоты запросов — без сторонних пакетов.
@@ -14,8 +15,8 @@ import { validateInitData } from './telegramAuth.js';
 const MAX_KEYS = 50000; // защита памяти: если ключей слишком много — начинаем с чистого листа
 
 export function requestKey(req) {
-  const raw = req.headers['x-telegram-init-data'] || req.query?.auth;
-  const auth = raw ? validateInitData(String(raw)) : null;
+  const raw = req.headers['x-telegram-init-data'] || req.headers['x-forma-session'] || req.query?.auth;
+  const auth = raw ? (String(raw).startsWith('fs_') ? { user: peekSession(String(raw)) } : validateInitData(String(raw))) : null;
   return auth?.user
     ? { key: `u:${auth.user.id}`, authed: true }
     : { key: `ip:${req.ip}`, authed: false };
