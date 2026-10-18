@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import { sessionUser } from './webAuth.js';
 
 dotenv.config();
 
@@ -52,17 +53,31 @@ export function validateInitData(initData) {
 }
 
 /**
- * Express-мидлвар: проверяет заголовок X-Telegram-Init-Data,
- * кладёт req.telegramUser при успехе, иначе 401.
+ * Кто делает запрос: подпись Telegram (initData) или, если приложение открыто вне Telegram, ключ сессии
+ * (см. webAuth.js). Принимает «сырое» значение — заголовок или параметр ?auth= у картинок.
  */
-export function requireTelegramAuth(req, res, next) {
-  const initData = req.headers['x-telegram-init-data'];
-  const result = validateInitData(initData);
-
-  if (!result || !result.user) {
-    return res.status(401).json({ error: 'Invalid Telegram auth' });
+export async function resolveAuth(raw) {
+  raw = String(raw || '');
+  if (!raw) return null;
+  if (raw.startsWith('fs_')) {
+    const user = await sessionUser(raw).catch(() => null);
+    return user ? { user } : null;
   }
+  return validateInitData(raw);
+}
 
-  req.telegramUser = result.user;
-  next();
+/**
+ * Express-мидлвар: проверяет заголовок X-Telegram-Init-Data (внутри Telegram)
+ * или X-Forma-Session (вход вне Telegram), кладёт req.telegramUser при успехе, иначе 401.
+ */
+export async function requireTelegramAuth(req, res, next) {
+  try {
+    const result = validateInitData(req.headers['x-telegram-init-data'])
+      || await resolveAuth(req.headers['x-forma-session']);
+    if (!result || !result.user) return res.status(401).json({ error: 'Invalid Telegram auth' });
+    req.telegramUser = result.user;
+    next();
+  } catch (err) {
+    next(err);
+  }
 }
