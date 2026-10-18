@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
-import { requireTelegramAuth, validateInitData } from '../telegramAuth.js';
+import { requireTelegramAuth, resolveAuth } from '../telegramAuth.js';
 import { volumeKm, bestResults, parseResult, disciplineKey, higherIsBetter } from '../ai.js';
 import { socialReady, visibleToSql, canSeeCustom, manualRecordsAsStarts, pioneerNo, isCoachOf, shareGroup, newGroupCode, getRefCode, referralStats, REF_MIN_WORKOUTS, REF_MAX_BONUS } from '../social.js';
 
@@ -171,7 +171,7 @@ async function withSocial(workouts, meId) {
 //  Картинка не умеет слать заголовки, поэтому подпись Telegram передаём в адресе.
 // ===================================================================
 router.get('/avatar/:userId', async (req, res) => {
-  const auth = validateInitData(req.query.auth);
+  const auth = await resolveAuth(req.query.auth);
   if (!auth?.user) return res.status(401).end();
   const me = await getInternalUser(auth.user.id);
   if (!me || !(await areFriends(me.id, req.params.userId))) return res.status(403).end();
