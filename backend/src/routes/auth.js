@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query, dbReady, pool } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
+import { revokeAllSessions } from '../webAuth.js';
 import { recalcStreak, getClientToday, backfillDaysFor } from '../streak.js';
 import { remindersReady, setReminderEnabled, setNotifyPrefs } from '../reminders.js';
 import { rememberReferral, settleReferral, socialReady, pioneerNo } from '../social.js';
@@ -609,6 +610,7 @@ router.delete('/me', requireTelegramAuth, async (req, res) => {
     await client.query('BEGIN');
     await eraseUser(client, u.rows[0].id);
     await client.query('COMMIT');
+    await revokeAllSessions(req.telegramUser.id).catch(() => {});
     console.log('Account deleted by user:', u.rows[0].id);
     res.json({ ok: true });
   } catch (err) {
