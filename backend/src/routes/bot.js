@@ -5,6 +5,7 @@ import { requireTelegramAuth } from '../telegramAuth.js';
 import { GIVEAWAYS, giveawayStatus, runDraw, startGiveawayScheduler, isAdmin, honestStreak, nextDrawAt } from '../giveaway.js';
 import { startReminderScheduler, reminderText, sendWeeklyDigests } from '../reminders.js';
 import { rememberReferral } from '../social.js';
+import { loginPending, confirmLogin, denyLogin } from '../webAuth.js';
 import { adminDeleteRun } from './partners.js';
 
 /**
@@ -94,7 +95,7 @@ async function configureBot() {
     const hook = await tg('setWebhook', {
       url: `${SERVER_URL}/api/bot/webhook`,
       secret_token: WEBHOOK_SECRET,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'callback_query'],
       drop_pending_updates: true,
     });
     if (hook?.ok) console.log('Webhook OK — бот отвечает на /start');
@@ -239,6 +240,28 @@ function escapeHtml(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// Нажатия на кнопки под сообщениями бота (сейчас — подтверждение входа)
+async function handleCallback(cb) {
+  const m = /^wl:(y|n):([a-f0-9]{24})$/.exec(String(cb.data || ''));
+  const chatId = cb.message?.chat?.id;
+  if (!m || !cb.from?.id || !chatId || cb.message?.chat?.type !== 'private') {
+    await tg('answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {});
+    return;
+  }
+  if (m[1] === 'y') {
+    const ok = await confirmLogin(m[2], cb.from);
+    await tg('answerCallbackQuery', { callback_query_id: cb.id, text: ok ? 'Готово — возвращайся в Forma' : 'Ссылка устарела' });
+    await tg('editMessageText', {
+      chat_id: chatId, message_id: cb.message.message_id,
+      text: ok ? '✅ Вход подтверждён. Возвращайся в Forma — она уже открывается.' : 'Эта ссылка для входа уже не действует. Нажми «Войти через Telegram» в Forma ещё раз.',
+    });
+  } else {
+    await denyLogin(m[2]);
+    await tg('answerCallbackQuery', { callback_query_id: cb.id, text: 'Вход отклонён' });
+    await tg('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text: '🚫 Вход отклонён. Если это были не ты — ничего больше делать не нужно.' });
+  }
+}
+
 async function handleMessage(msg) {
   const chatId = msg.chat?.id;
   if (!chatId || msg.chat.type !== 'private') return;
@@ -254,6 +277,25 @@ async function handleMessage(msg) {
         chat_id: chatId,
         text: `👥 Тебя пригласили в группу в Forma!\n\nЖми кнопку — откроется приложение и предложит вступить.`,
         reply_markup: { inline_keyboard: [[{ text: '👥 Вступить в группу', web_app: { url: `${APP_URL}?join=${g[1].toLowerCase()}` } }]] },
+      });
+      return;
+    }
+    // вход в Forma вне Telegram (сайт на главном экране): спрашиваем, точно ли это он
+    const wl = /^wl_([a-f0-9]{24})$/.exec(payload);
+    if (wl) {
+      const valid = await loginPending(wl[1]).catch(() => false);
+      if (!valid) {
+        await tg('sendMessage', { chat_id: chatId, text: 'Эта ссылка для входа уже не действует. Вернись в Forma и нажми «Войти через Telegram» ещё раз.' });
+        return;
+      }
+      await tg('sendMessage', {
+        chat_id: chatId,
+        text: '🔐 <b>Вход в Forma</b>\n\nКто-то хочет войти в твой дневник с телефона или сайта. Это ты?\n\nЕсли ты не нажимал «Войти через Telegram» — выбери «Нет, это не я».',
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [[
+          { text: '✅ Да, это я', callback_data: `wl:y:${wl[1]}` },
+          { text: '🚫 Нет, это не я', callback_data: `wl:n:${wl[1]}` },
+        ]] },
       });
       return;
     }
@@ -423,6 +465,7 @@ router.post('/webhook', (req, res) => {
 
   res.json({ ok: true }); // отвечаем Telegram сразу, а сообщение обрабатываем следом
   if (req.body?.message) handleMessage(req.body.message).catch((err) => console.error('Bot message failed:', err.message));
+  if (req.body?.callback_query) handleCallback(req.body.callback_query).catch((err) => console.error('Bot callback failed:', err.message));
 });
 
 export default router;
