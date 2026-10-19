@@ -13,6 +13,10 @@ types.setTypeParser(1082, (val) => val);
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL?.includes('supabase') ? { rejectUnauthorized: false } : false,
+  // Пулер Supabase в режиме сессий пускает всего 15 подключений на всех. При обновлении на Railway старая и новая
+  // версии работают вместе — по 10 подключений у каждой не помещались (ошибка EMAXCONNSESSION). Берём меньше.
+  max: Number(process.env.PG_POOL_MAX) || 5,
+  idleTimeoutMillis: 20000,
 });
 
 export async function query(text, params) {
