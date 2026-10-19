@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth, resolveAuth } from '../telegramAuth.js';
+import { sendPush } from '../push.js';
 import { volumeKm, bestResults, parseResult, disciplineKey, higherIsBetter } from '../ai.js';
 import { socialReady, visibleToSql, canSeeCustom, manualRecordsAsStarts, pioneerNo, isCoachOf, shareGroup, newGroupCode, getRefCode, referralStats, REF_MIN_WORKOUTS, REF_MAX_BONUS } from '../social.js';
 
@@ -80,15 +81,19 @@ async function getVisibleWorkout(meId, workoutId) {
 
 // Уведомление в Telegram от бота (если человек когда-то запускал бота). Ошибки не мешают приложению.
 function notify(telegramId, text) {
-  if (!BOT_TOKEN || !telegramId) return;
-  fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: telegramId,
-      text,
-      reply_markup: { inline_keyboard: [[{ text: 'Открыть Forma', web_app: { url: APP_URL } }]] },
-    }),
+  if (!telegramId) return;
+  // в приложении — push; если у человека его нет (или доставка не вышла) — сообщение от бота в Telegram
+  sendPush(telegramId, text).catch(() => 0).then((n) => {
+    if (n > 0 || !BOT_TOKEN) return;
+    return fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: telegramId,
+        text,
+        reply_markup: { inline_keyboard: [[{ text: 'Открыть Forma', web_app: { url: APP_URL } }]] },
+      }),
+    });
   }).catch((err) => console.error('Notify failed:', err.message));
 }
 
