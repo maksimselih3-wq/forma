@@ -611,6 +611,7 @@ router.delete('/me', requireTelegramAuth, async (req, res) => {
     await eraseUser(client, u.rows[0].id);
     await client.query('COMMIT');
     await revokeAllSessions(req.telegramUser.id).catch(() => {});
+    await query('DELETE FROM push_tokens WHERE telegram_id = $1', [req.telegramUser.id]).catch(() => {});
     console.log('Account deleted by user:', u.rows[0].id);
     res.json({ ok: true });
   } catch (err) {
