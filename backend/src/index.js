@@ -21,6 +21,7 @@ import geoRoutes from './routes/geo.js';
 import healthRoutes from './routes/health.js';
 import stravaRoutes, { ensureStravaWebhook } from './routes/strava.js';
 import webAuthRoutes from './webAuth.js';
+import pushRoutes from './routes/push.js';
 
 dotenv.config();
 
@@ -70,6 +71,7 @@ app.use('/api/chat', protectAsync(chatRoutes));
 app.use('/api/bot', protectAsync(botRoutes)); // Telegram-бот: приветствие на /start и оформление
 app.use('/api/partners', protectAsync(partnerRoutes)); // совместные пробежки: поиск напарников в своём городе
 app.use('/api/coach', protectAsync(coachRoutes)); // кабинет тренера: команда, спортсмен, сводка недели, задания
+app.use('/api/push', protectAsync(pushRoutes)); // push-уведомления в мобильное приложение
 app.use('/api/webauth', protectAsync(webAuthRoutes)); // вход вне Telegram: код → бот → ключ сессии
 app.use('/api/strava', protectAsync(stravaRoutes)); // подключение Strava: тренировки сами попадают в дневник
 app.use('/api/geo', protectAsync(geoRoutes)); // место тренировки: поиск и высота над уровнем моря
