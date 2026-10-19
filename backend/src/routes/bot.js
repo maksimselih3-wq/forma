@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { query } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { GIVEAWAYS, giveawayStatus, runDraw, startGiveawayScheduler, isAdmin, honestStreak, nextDrawAt } from '../giveaway.js';
+import { sendPush, plainPush } from '../push.js';
 import { startReminderScheduler, reminderText, sendWeeklyDigests } from '../reminders.js';
 import { rememberReferral } from '../social.js';
 import { loginPending, confirmLogin, denyLogin } from '../webAuth.js';
@@ -111,7 +112,12 @@ const sendText = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, re
 startGiveawayScheduler(sendText);
 
 // Вечернее напоминание: в 21:00 (МСК), если за сегодня ещё нет записи
-const sendHtml = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
+// Сначала push в приложение; если у человека его нет или доставка не вышла — обычное сообщение бота
+const sendTgHtml = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
+const sendHtml = async (chatId, text) => {
+  try { if (await sendPush(chatId, plainPush(text)) > 0) return { ok: true }; } catch (e) { /* уйдёт в Telegram */ }
+  return sendTgHtml(chatId, text);
+};
 startReminderScheduler(sendHtml);
 
 function mskDateLabel(d) {
@@ -357,7 +363,7 @@ async function handleMessage(msg) {
       `SELECT u.first_name, u.current_streak, (SELECT MAX(date) FROM workouts w WHERE w.user_id = u.id) AS last_date
        FROM users u WHERE telegram_id = $1`, [msg.from.id]);
     const today = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
-    await sendHtml(chatId, reminderText(u.rows[0] || {}, today));
+    await sendTgHtml(chatId, reminderText(u.rows[0] || {}, today));
     return;
   }
 
@@ -371,8 +377,8 @@ async function handleMessage(msg) {
   // Итоги недели прямо сейчас — только для админа, только себе
   if (text === '/digest_test') {
     if (!(await isAdmin(msg.from.id))) return;
-    const n = await sendWeeklyDigests(sendHtml, { force: true, onlyTelegramId: msg.from.id });
-    if (!n) await sendHtml(chatId, 'За эту неделю пока нет записей — итоги не из чего собрать.');
+    const n = await sendWeeklyDigests(sendTgHtml, { force: true, onlyTelegramId: msg.from.id });
+    if (!n) await sendTgHtml(chatId, 'За эту неделю пока нет записей — итоги не из чего собрать.');
     return;
   }
 
