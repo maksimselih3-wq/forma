@@ -90,7 +90,7 @@ export function plainPush(html) {
  * Отправить push человеку на все его устройства.
  * Возвращает число устройств, на которые доставка принята (0 — push не вышел, можно слать в Telegram).
  */
-export async function sendPush(telegramId, body, { title = 'Forma', data = {} } = {}) {
+export async function sendPush(telegramId, body, { title = '', data = {} } = {}) {
   const acc = getAccount();
   if (!acc || !telegramId || !body) return 0;
   await pushReady;
@@ -112,7 +112,8 @@ export async function sendPush(telegramId, body, { title = 'Forma', data = {} } 
         body: JSON.stringify({
           message: {
             token,
-            notification: { title, body },
+            // без заголовка: система сама подписывает уведомление названием приложения, и «Forma» дважды не появляется
+            notification: title ? { title, body } : { body },
             data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
             android: { priority: 'HIGH' },
             apns: { payload: { aps: { sound: 'default' } } },
