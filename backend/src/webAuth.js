@@ -152,6 +152,15 @@ async function pollLogin(code, ua) {
   return { status: 'ok', session: token };
 }
 
+/** Выдать ключ сессии (для входа по почте и других способов входа, кроме бота). */
+export async function createSession(telegramId, tgUser, ua) {
+  await webAuthReady;
+  const token = SESSION_PREFIX + crypto.randomBytes(32).toString('hex');
+  await query('INSERT INTO web_sessions (token_hash, telegram_id, tg_user, ua) VALUES ($1, $2, $3, $4)',
+    [sha(token), telegramId, tgUser ? JSON.stringify(tgUser) : null, String(ua || '').slice(0, 200)]);
+  return token;
+}
+
 // ---------- маршруты (без проверки Telegram: человек как раз входит) ----------
 const router = Router();
 const startHits = new Map(); // ip -> [времена]: не больше 15 новых кодов в час с одного адреса
