@@ -159,6 +159,7 @@ router.get('/', async (req, res) => {
               WHERE m.run_id = r.id ORDER BY m.joined_at LIMIT 5) t) AS people
          FROM runs r
          WHERE lower(r.city) = lower($1) AND r.date >= $2::date
+           AND r.author_id NOT IN (SELECT blocked FROM user_blocks WHERE blocker = $3 UNION SELECT blocker FROM user_blocks WHERE blocked = $3)
          ORDER BY r.date, r.time
          LIMIT 50`, [city, today, req.me.id])
       : { rows: [] },
@@ -226,7 +227,7 @@ router.get('/:id', async (req, res) => {
     query(`SELECT ${PUBLIC_USER} FROM users u WHERE u.id = $1`, [run.author_id]),
     query(`SELECT ${PUBLIC_USER} FROM run_members m JOIN users u ON u.id = m.user_id WHERE m.run_id = $1 ORDER BY m.joined_at`, [id]),
     query(
-      `SELECT x.id, x.text, x.created_at, x.user_id FROM run_messages x WHERE x.run_id = $1 ORDER BY x.id DESC LIMIT 100`, [id]),
+      `SELECT x.id, x.text, x.created_at, x.user_id FROM run_messages x WHERE x.run_id = $1 AND x.user_id NOT IN (SELECT blocked FROM user_blocks WHERE blocker = $2 UNION SELECT blocker FROM user_blocks WHERE blocked = $2) ORDER BY x.id DESC LIMIT 100`, [id, req.me.id]),
   ]);
   const writerIds = [...new Set(messages.rows.map((m) => m.user_id))];
   const writers = writerIds.length ? await query(`SELECT ${PUBLIC_USER} FROM users u WHERE u.id = ANY($1::int[])`, [writerIds]) : { rows: [] };
