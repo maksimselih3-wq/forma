@@ -19,6 +19,21 @@ export const pool = new Pool({
   idleTimeoutMillis: 20000,
 });
 
+// Если у Supabase кончились места в пуле (EMAXCONNSESSION — бывает на пару секунд при обновлении сервера, пока
+// старая версия ещё не закрыла свои подключения), не падаем сразу, а ждём и пробуем снова.
+const isBusy = (e) => /EMAXCONNSESSION|max clients reached|too many clients/i.test(String(e?.message || e));
+const origConnect = pool.connect.bind(pool);
+pool.connect = async (...args) => {
+  if (typeof args[0] === 'function') return origConnect(...args);
+  for (let i = 0; ; i++) {
+    try { return await origConnect(); }
+    catch (e) {
+      if (!isBusy(e) || i >= 8) throw e;
+      await new Promise((ok) => setTimeout(ok, 1000 + i * 1000));
+    }
+  }
+};
+
 export async function query(text, params) {
   return pool.query(text, params);
 }
@@ -93,6 +108,23 @@ const MIGRATIONS = [
        EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
      END LOOP;
    END $$`,
+  // жалобы и блокировка пользователей
+  `CREATE TABLE IF NOT EXISTS user_blocks (
+     blocker INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     blocked INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     PRIMARY KEY (blocker, blocked)
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked)`,
+  `CREATE TABLE IF NOT EXISTS user_reports (
+     id SERIAL PRIMARY KEY,
+     reporter INT REFERENCES users(id) ON DELETE SET NULL,
+     target_user INT REFERENCES users(id) ON DELETE SET NULL,
+     kind TEXT NOT NULL,
+     target_id INT,
+     reason TEXT,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+   )`,
 ];
 
 // Если где-то в маршруте случится непредвиденная ошибка (например, мусор вместо id),
