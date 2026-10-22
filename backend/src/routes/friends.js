@@ -217,6 +217,8 @@ router.post('/request', async (req, res) => {
   if (friend.id === me.id) {
     return res.status(400).json({ error: 'Нельзя добавить самого себя' });
   }
+  const blk = await query('SELECT 1 FROM user_blocks WHERE (blocker = $1 AND blocked = $2) OR (blocker = $2 AND blocked = $1)', [me.id, friend.id]);
+  if (blk.rows.length) return res.status(403).json({ error: 'Нельзя отправить заявку этому пользователю' });
 
   // проверяем, нет ли уже связи в любую сторону
   const existing = await query(
@@ -299,6 +301,7 @@ router.get('/feed', async (req, res) => {
      ${WORKOUT_SELECT}
      WHERE w.user_id IN (SELECT id FROM people) AND (w.user_id = $1 OR ${visibleToSql('$1')})
        AND ($2::date IS NULL OR (w.date, w.id) < ($2::date, $3::int))
+       AND w.user_id NOT IN (SELECT blocked FROM user_blocks WHERE blocker = $1 UNION SELECT blocker FROM user_blocks WHERE blocked = $1)
      ORDER BY w.date DESC, w.id DESC
      LIMIT 15`,
     [req.me.id, beforeDate, beforeId || 0]
@@ -384,14 +387,14 @@ router.get('/workouts/:id/social', async (req, res) => {
   const [reactions, comments] = await Promise.all([
     query(
       `SELECT r.emoji, ${PUBLIC_USER} FROM workout_reactions r JOIN users u ON u.id = r.user_id
-       WHERE r.workout_id = $1 ORDER BY r.created_at`,
-      [w.id]
+       WHERE r.workout_id = $1 AND r.user_id NOT IN (SELECT blocked FROM user_blocks WHERE blocker = $2 UNION SELECT blocker FROM user_blocks WHERE blocked = $2) ORDER BY r.created_at`,
+      [w.id, req.me.id]
     ),
     query(
       `SELECT c.id AS comment_id, c.text, c.created_at, ${PUBLIC_USER}
        FROM workout_comments c JOIN users u ON u.id = c.user_id
-       WHERE c.workout_id = $1 ORDER BY c.created_at`,
-      [w.id]
+       WHERE c.workout_id = $1 AND c.user_id NOT IN (SELECT blocked FROM user_blocks WHERE blocker = $2 UNION SELECT blocker FROM user_blocks WHERE blocked = $2) ORDER BY c.created_at`,
+      [w.id, req.me.id]
     ),
   ]);
 
@@ -609,6 +612,7 @@ router.get('/groups/:id/feed', async (req, res) => {
      WHERE w.user_id IN (SELECT user_id FROM group_members WHERE group_id = $1)
        AND (${visibleToSql('$2')} OR w.user_id = $2 OR $3)
        AND w.date > CURRENT_DATE - 30 AND COALESCE(w.source, '') <> 'strava'
+       AND w.user_id NOT IN (SELECT blocked FROM user_blocks WHERE blocker = $2 UNION SELECT blocker FROM user_blocks WHERE blocked = $2)
      ORDER BY w.date DESC, w.id DESC LIMIT 40`, [gid, req.me.id, isCoach]);
   res.json({ workouts: await withSocial(r.rows, req.me.id) });
 });
