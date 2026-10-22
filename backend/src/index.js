@@ -22,6 +22,7 @@ import healthRoutes from './routes/health.js';
 import stravaRoutes, { ensureStravaWebhook } from './routes/strava.js';
 import webAuthRoutes from './webAuth.js';
 import emailAuthRoutes from './routes/emailAuth.js';
+import safetyRoutes from './routes/safety.js';
 import pushRoutes from './routes/push.js';
 
 dotenv.config();
@@ -73,6 +74,7 @@ app.use('/api/bot', protectAsync(botRoutes)); // Telegram-бот: приветс
 app.use('/api/partners', protectAsync(partnerRoutes)); // совместные пробежки: поиск напарников в своём городе
 app.use('/api/coach', protectAsync(coachRoutes)); // кабинет тренера: команда, спортсмен, сводка недели, задания
 app.use('/api/push', protectAsync(pushRoutes)); // push-уведомления в мобильное приложение
+app.use('/api/safety', protectAsync(safetyRoutes)); // жалобы и блокировка пользователей
 app.use('/api/email', protectAsync(emailAuthRoutes)); // вход по почте и паролю — для тех, у кого не работает Telegram
 app.use('/api/webauth', protectAsync(webAuthRoutes)); // вход вне Telegram: код → бот → ключ сессии
 app.use('/api/strava', protectAsync(stravaRoutes)); // подключение Strava: тренировки сами попадают в дневник
