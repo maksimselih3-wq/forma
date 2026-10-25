@@ -59,8 +59,10 @@ app.post('/api/chat', requireTelegramAuth, aiGuard);
 app.post('/api/workouts/parse', requireTelegramAuth, aiGuard);
 app.post('/api/workouts/:id/feedback', requireTelegramAuth, aiGuard);
 app.get('/api/insights', requireTelegramAuth, aiGuard);
+app.get('/api/insights/plan', requireTelegramAuth, aiGuard);
 app.post('/api/workouts/parse', requireTelegramAuth, aiQuota('parse'));
 app.post('/api/workouts/:id/feedback', requireTelegramAuth, aiQuota('feedback', { consume: false }));
+app.get('/api/insights/plan', requireTelegramAuth, aiQuota('plan'));
 app.get('/api/insights', requireTelegramAuth, aiQuota('insights'));
 
 // Ошибка в async-обработчике иначе «подвешивает» запрос до таймаута (Express 4) — protectAsync
