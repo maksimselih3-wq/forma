@@ -67,6 +67,9 @@ const MIGRATIONS = [
      weight TEXT
    )`,
   `CREATE INDEX IF NOT EXISTS idx_exercises_workout ON workout_exercises(workout_id)`,
+  // быстрый список записей: к каждой записи подтягиваются отрезки (иначе — перебор всей таблицы)
+  `CREATE INDEX IF NOT EXISTS idx_sets_workout ON workout_sets(workout_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_workouts_user_date ON workouts(user_id, date DESC)`,
   // kind = 'tech' — попытки в прыжках и метаниях (техника), остальное — силовая/ОФП
   `ALTER TABLE workout_exercises ADD COLUMN IF NOT EXISTS kind TEXT`,
   // своё фото профиля (картинка, сжатая на телефоне)
