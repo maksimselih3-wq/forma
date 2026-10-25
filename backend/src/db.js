@@ -74,6 +74,8 @@ const MIGRATIONS = [
   `ALTER TABLE workout_exercises ADD COLUMN IF NOT EXISTS kind TEXT`,
   // своё фото профиля (картинка, сжатая на телефоне)
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data TEXT`,
+  // версия фото считается один раз при записи, а не при каждом чтении списка друзей/ленты (раньше md5 по каждой картинке в каждом запросе)
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_ver TEXT GENERATED ALWAYS AS (left(md5(avatar_data), 8)) STORED`,
   // друзья: видят ли они мой календарь целиком и когда я последний раз смотрел активность
   `ALTER TABLE users
      ADD COLUMN IF NOT EXISTS share_calendar BOOLEAN DEFAULT true,
