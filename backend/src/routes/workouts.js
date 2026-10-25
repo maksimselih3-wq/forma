@@ -121,6 +121,7 @@ function cleanExercises(list) {
       sets: parseInt(e.sets, 10) > 0 ? Math.min(parseInt(e.sets, 10), 100) : null,
       reps: txt(e.reps, 30),
       weight: txt(e.weight, 30),
+      kind: e.kind === 'tech' ? 'tech' : null,
     }))
     .filter((e) => e.name);
 }
@@ -255,9 +256,9 @@ async function saveChildren(client, workoutId, sets, exercises) {
   for (let i = 0; i < exercises.length; i++) {
     const e = exercises[i];
     await client.query(
-      `INSERT INTO workout_exercises (workout_id, order_index, name, sets, reps, weight)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [workoutId, i, e.name, e.sets, e.reps, e.weight]
+      `INSERT INTO workout_exercises (workout_id, order_index, name, sets, reps, weight, kind)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [workoutId, i, e.name, e.sets, e.reps, e.weight, e.kind || null]
     );
   }
 }
@@ -287,7 +288,12 @@ router.post('/parse', requireTelegramAuth, async (req, res) => {
   if (!text) return res.status(400).json({ error: 'Напиши, как прошла тренировка' });
 
   try {
-    const p = await parseWorkoutText(text);
+    let discipline = '';
+    try {
+      const u = await query('SELECT discipline FROM users WHERE telegram_id = $1', [req.telegramUser.id]);
+      discipline = u.rows[0]?.discipline || '';
+    } catch (e) { /* без дисциплины тоже разберём */ }
+    const p = await parseWorkoutText(text, discipline);
     const parsed = {
       type: p.type === 'rest' ? 'rest' : 'training',
       warmup: txt(p.warmup, 500),
