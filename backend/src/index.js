@@ -1,4 +1,5 @@
 import express from 'express';
+import zlib from 'zlib';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
@@ -35,6 +36,27 @@ app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS) || 1);
 app.disable('x-powered-by');
 
 app.use(cors());
+
+// Сжатие ответов (gzip): список записей и подобные ответы на медленной сети уменьшаются в 5–10 раз.
+// Своя маленькая обёртка на встроенном zlib — без новых пакетов.
+app.use((req, res, next) => {
+  const origJson = res.json.bind(res);
+  res.json = (body) => {
+    try {
+      const accept = String(req.headers['accept-encoding'] || '');
+      if (!/\bgzip\b/.test(accept) || res.headersSent || res.getHeader('Content-Encoding')) return origJson(body);
+      const text = JSON.stringify(body);
+      if (text === undefined || text.length < 1400) return origJson(body);
+      zlib.gzip(text, (err, buf) => {
+        if (err || res.headersSent) return err ? origJson(body) : undefined;
+        res.set({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding', 'Content-Length': buf.length });
+        res.end(buf);
+      });
+      return res;
+    } catch (e) { return origJson(body); }
+  };
+  next();
+});
 
 // Общий потолок запросов: на человека (по подписи Telegram) или, без подписи, на IP.
 // Webhook Telegram и проверка здоровья не считаем — они от самого Telegram / Railway.
