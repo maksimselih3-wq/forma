@@ -82,6 +82,10 @@ export async function recalcStreak(userId, today = serverToday()) {
  * Числа меняются в Railway: BACKFILL_NEW_USER_DAYS (по умолчанию 7) и BACKFILL_DAYS (по умолчанию 1).
  */
 export function backfillDaysFor(user) {
+  // Эти аккаунты (по нику в Telegram) могут заполнять календарь за любой день: переменная UNLIMITED_BACKFILL_USERS
+  // в Railway — ники через запятую, без @. По умолчанию — владелец приложения.
+  const vip = (process.env.UNLIMITED_BACKFILL_USERS || 'maksimshelikh').split(',').map((x) => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean);
+  if (user?.username && vip.includes(String(user.username).toLowerCase())) return 3650;
   const newDays = Number(process.env.BACKFILL_NEW_USER_DAYS) || 7;
   const days = Number(process.env.BACKFILL_DAYS) || 1;
   const created = user?.created_at ? new Date(user.created_at).getTime() : NaN;
