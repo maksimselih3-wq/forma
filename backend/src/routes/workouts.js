@@ -204,6 +204,15 @@ async function buildFeedback(userId, workoutId, today) {
   }
 }
 
+// Отзыв Fom пишется в фоне: запись сохраняется сразу, а приложение потом забирает отзыв (GET /:id/feedback-wait).
+const pendingFeedback = new Map(); // workoutId -> Promise
+function startFeedback(userId, workoutId, today) {
+  const p = buildFeedback(userId, workoutId, today).catch(() => null);
+  pendingFeedback.set(workoutId, p);
+  p.finally(() => setTimeout(() => { if (pendingFeedback.get(workoutId) === p) pendingFeedback.delete(workoutId); }, 120000));
+  return p;
+}
+
 // Кому видна запись: 'private' — только мне, 'public' — всем друзьям, 'custom' — выбранным друзьям
 function cleanVisibility(v) {
   return v === 'public' || v === 'custom' ? v : 'private';
@@ -426,10 +435,10 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     // Серию пересчитываем целиком — запись задним числом может «склеить» разорванную серию
     const streak = await recalcStreak(user.id, today);
 
-    // ИИ-фидбек от Fom — только для тренировок, не для дней отдыха
-    const aiFeedback = isTraining ? await buildFeedback(user.id, workout.id, today) : null;
+    // ИИ-фидбек от Fom — только для тренировок; пишется в фоне, чтобы сохранение не ждало ИИ
+    if (isTraining) startFeedback(user.id, workout.id, today);
 
-    res.json({ workout: { ...workout, sets, exercises, ai_feedback: aiFeedback }, streak });
+    res.json({ workout: { ...workout, sets, exercises, ai_feedback: null }, streak, feedback_pending: isTraining });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
@@ -517,9 +526,8 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
     // 'updated' — Fom написал новый отзыв; 'same' — содержание не менялось; 'failed' — Fom не ответил
     let feedbackStatus = 'same';
     if (isTraining && after?.source !== 'strava' && (contentKey(before.rows[0]) !== contentKey(after) || !aiFeedback)) {
-      const fresh = await buildFeedback(user.id, updated.rows[0].id, getClientToday(req));
-      feedbackStatus = fresh ? 'updated' : 'failed';
-      if (fresh) aiFeedback = fresh;
+      startFeedback(user.id, updated.rows[0].id, getClientToday(req));
+      feedbackStatus = 'pending';
     }
     res.json({ workout: { ...(after || updated.rows[0]), ai_feedback: aiFeedback, ...(updated.rows[0].visibility === 'custom' ? { visible_to: visibleTo } : {}) }, feedback_status: feedbackStatus });
   } catch (err) {
@@ -529,6 +537,20 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
   } finally {
     client.release();
   }
+});
+
+// GET /api/workouts/:id/feedback-wait — дождаться отзыва Fom, который пишется в фоне после сохранения
+router.get('/:id/feedback-wait', requireTelegramAuth, async (req, res) => {
+  const user = await getInternalUser(req.telegramUser.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const id = parseInt(req.params.id, 10) || 0;
+  const own = await query('SELECT ai_feedback FROM workouts WHERE id = $1 AND user_id = $2', [id, user.id]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'Запись не найдена' });
+  const p = pendingFeedback.get(id);
+  if (!p) return res.json({ ai_feedback: own.rows[0].ai_feedback || null });
+  const text = await Promise.race([p, new Promise((r) => setTimeout(() => r(undefined), 55000))]);
+  if (text === undefined) return res.json({ ai_feedback: own.rows[0].ai_feedback || null, timeout: true });
+  res.json({ ai_feedback: text || own.rows[0].ai_feedback || null });
 });
 
 // POST /api/workouts/:id/feedback — попросить Fom написать отзыв заново (кнопка «Обновить отзыв»)
