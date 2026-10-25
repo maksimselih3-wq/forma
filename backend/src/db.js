@@ -67,6 +67,8 @@ const MIGRATIONS = [
      weight TEXT
    )`,
   `CREATE INDEX IF NOT EXISTS idx_exercises_workout ON workout_exercises(workout_id)`,
+  // kind = 'tech' — попытки в прыжках и метаниях (техника), остальное — силовая/ОФП
+  `ALTER TABLE workout_exercises ADD COLUMN IF NOT EXISTS kind TEXT`,
   // своё фото профиля (картинка, сжатая на телефоне)
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data TEXT`,
   // друзья: видят ли они мой календарь целиком и когда я последний раз смотрел активность
