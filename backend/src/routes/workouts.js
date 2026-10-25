@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { query, pool, WORKOUT_SELECT, dbReady } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { recalcStreak, getClientToday, isValidDate, daysBetween, backfillDaysFor } from '../streak.js';
-import { getWorkoutFeedback, parseWorkoutText, athleteContext, workSignature } from '../ai.js';
+import { getWorkoutFeedback, parseWorkoutText, athleteContext, workSignature, estimateVolume } from '../ai.js';
 import { socialReady } from '../social.js';
 
 const router = Router();
@@ -543,6 +543,45 @@ router.post('/:id/feedback', requireTelegramAuth, async (req, res) => {
   const text = await buildFeedback(user.id, w.rows[0].id, getClientToday(req));
   if (!text) return res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
   res.json({ ai_feedback: text });
+});
+
+// POST /api/workouts/:id/volume — Fom считает беговой объём записи и сверяет с тем, что вписал человек
+router.post('/:id/volume', requireTelegramAuth, async (req, res) => {
+  const user = await getInternalUser(req.telegramUser.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  await schemaReady;
+  const r = await query(`${WORKOUT_SELECT} WHERE w.id = $1 AND w.user_id = $2`, [parseInt(req.params.id, 10) || 0, user.id]);
+  const w = r.rows[0];
+  if (!w) return res.status(404).json({ error: 'Запись не найдена' });
+  if (w.type !== 'training') return res.status(400).json({ error: 'Объём считается только у тренировки' });
+  const userKm = Number(w.total_km) > 0 ? Number(w.total_km) : null;
+  let est;
+  try {
+    est = await estimateVolume(w);
+  } catch (err) {
+    console.error('Volume check failed:', err.message);
+    if (err?.aiDown) return res.status(503).json({ error: AI_DOWN_MESSAGE, ai_down: true });
+    return res.status(502).json({ error: 'Fom сейчас не ответил' });
+  }
+  const fom = est.fom_km ?? (est.program_km > 0 ? est.program_km : null);
+  if (!fom) return res.json({ status: 'none' });
+  const close = (a, b) => Math.abs(a - b) <= Math.max(0.3, 0.05 * Math.max(a, b));
+  let status;
+  if (userKm) status = close(userKm, fom) ? 'match' : 'differs';
+  else status = est.program_km > 0 && close(est.program_km, fom) ? 'counted' : 'better';
+  res.json({ status, fom_km: fom, program_km: est.program_km, user_km: userKm, parts: est.parts, note: est.note });
+});
+
+// POST /api/workouts/:id/total-km { km } — записать общий объём (km: null — убрать, объём снова считается по записи)
+router.post('/:id/total-km', requireTelegramAuth, async (req, res) => {
+  const user = await getInternalUser(req.telegramUser.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  await schemaReady;
+  const km = req.body.km === null ? null : cleanTotalKm(req.body.km);
+  if (req.body.km !== null && km === null) return res.status(400).json({ error: 'Некорректный объём' });
+  const r = await query(`UPDATE workouts SET total_km = $1 WHERE id = $2 AND user_id = $3 AND type = 'training' RETURNING id`, [km, parseInt(req.params.id, 10) || 0, user.id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'Запись не найдена' });
+  res.json({ ok: true, total_km: km });
 });
 
 // DELETE /api/workouts/:id — после удаления серия пересчитывается
