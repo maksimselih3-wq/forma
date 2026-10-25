@@ -37,6 +37,16 @@ app.disable('x-powered-by');
 
 app.use(cors());
 
+// Медленные запросы (дольше 0,8 с) пишем в лог Railway строкой «SLOW …» — по ним видно, что именно тормозит
+app.use((req, res, next) => {
+  const t0 = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - t0;
+    if (ms > 800 && req.originalUrl.startsWith('/api')) console.log(`SLOW ${req.method} ${req.originalUrl.split('?')[0]} ${ms}ms status ${res.statusCode}`);
+  });
+  next();
+});
+
 // Сжатие ответов (gzip): список записей и подобные ответы на медленной сети уменьшаются в 5–10 раз.
 // Своя маленькая обёртка на встроенном zlib — без новых пакетов.
 app.use((req, res, next) => {
