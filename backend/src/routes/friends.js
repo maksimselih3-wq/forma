@@ -131,10 +131,10 @@ function isPersonalBest(w, starts) {
   return !prev || (higherIsBetter(c.discipline) ? v > prev.value : v < prev.value);
 }
 
-async function withSocial(workouts, meId) {
+async function withSocial(workouts, meId, knownStarts) {
   if (workouts.length === 0) return [];
   const compUsers = [...new Set(workouts.filter((w) => w.competition).map((w) => w.user_id))];
-  const starts = await startsByUser(compUsers);
+  const starts = knownStarts || await startsByUser(compUsers);
   const ids = workouts.map((w) => w.id);
   const userIds = [...new Set(workouts.map((w) => w.user_id))];
 
@@ -189,10 +189,11 @@ router.get('/avatar/:userId', async (req, res) => {
     const m = u.avatar_data.match(/^data:(image\/[a-z]+);base64,(.*)$/);
     if (!m) return res.status(404).end();
     res.set('Content-Type', m[1]);
-    res.set('Cache-Control', 'private, max-age=86400');
+    // адрес с версией (?v=…) меняется вместе с фото — можно хранить «навсегда»
+    res.set('Cache-Control', req.query.v ? 'private, max-age=31536000, immutable' : 'private, max-age=86400');
     return res.send(Buffer.from(m[2], 'base64'));
   }
-  if (u.photo_url) return res.redirect(u.photo_url);
+  if (u.photo_url) { res.set('Cache-Control', 'private, max-age=86400'); return res.redirect(u.photo_url); }
   res.status(404).end();
 });
 
@@ -669,15 +670,13 @@ router.post('/groups/:id/remove', async (req, res) => {
 router.get('/:friendId/profile', async (req, res) => {
   const friendId = parseInt(req.params.friendId, 10);
   if (!friendId) return res.status(400).json({ error: 'Неверный id' });
-  if (!(await areFriends(req.me.id, friendId))) return res.status(403).json({ error: 'Вы пока не друзья' });
-
   await socialReady;
-  const userRes = await query(`SELECT ${PUBLIC_USER}, u.share_calendar, u.show_records FROM users u WHERE u.id = $1`, [friendId]);
-  const user = userRes.rows[0];
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  user.pioneer_no = await pioneerNo(user.id).catch(() => null);
-
-  const [stats, days, workouts] = await Promise.all([
+  const isMe = friendId === req.me.id;
+  // всё, что не зависит друг от друга, летит в базу одновременно — раньше это были 6 запросов подряд
+  const [friends, userRes, pioneer, stats, workouts, starts] = await Promise.all([
+    areFriends(req.me.id, friendId),
+    query(`SELECT ${PUBLIC_USER}, u.share_calendar, u.show_records FROM users u WHERE u.id = $1`, [friendId]),
+    pioneerNo(friendId).catch(() => null),
     query(
       `SELECT count(*) FILTER (WHERE type = 'training')::int AS total,
               count(*) FILTER (WHERE type = 'training' AND date > CURRENT_DATE - 30)::int AS last30,
@@ -686,24 +685,30 @@ router.get('/:friendId/profile', async (req, res) => {
        FROM workouts WHERE user_id = $1`,
       [friendId]
     ),
-    // Календарь: если человек разрешил — все его дни (без подробностей закрытых), иначе только открытые
-    query(
-      `SELECT w.date, w.type, ${visibleToSql('$3')} AS public, w.id FROM workouts w
-       WHERE w.user_id = $1 AND w.date > CURRENT_DATE - 400 AND ($2 OR ${visibleToSql('$3')})
-       ORDER BY w.date`,
-      // для «Как меня видят друзья» смотрим глазами постороннего друга (id 0 — никто)
-      [friendId, user.share_calendar !== false || friendId === req.me.id, friendId === req.me.id ? 0 : req.me.id]
-    ),
     // «Как меня видят друзья» (свой профиль) — только открытые всем, остальным — ещё и открытые лично им
-    query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND ${friendId === req.me.id ? "w.visibility = 'public'" : visibleToSql('$2')}
-           ORDER BY w.date DESC LIMIT 30`, friendId === req.me.id ? [friendId] : [friendId, req.me.id]),
+    query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND ${isMe ? "w.visibility = 'public'" : visibleToSql('$2')}
+           ORDER BY w.date DESC LIMIT 30`, isMe ? [friendId] : [friendId, req.me.id]),
+    startsByUser([friendId]),
   ]);
+  if (!friends) return res.status(403).json({ error: 'Вы пока не друзья' });
+  const user = userRes.rows[0];
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  user.pioneer_no = pioneer;
+
+  // Календарь: если человек разрешил — все его дни (без подробностей закрытых), иначе только открытые
+  const daysP = query(
+    `SELECT w.date, w.type, ${visibleToSql('$3')} AS public, w.id FROM workouts w
+     WHERE w.user_id = $1 AND w.date > CURRENT_DATE - 400 AND ($2 OR ${visibleToSql('$3')})
+     ORDER BY w.date`,
+    // для «Как меня видят друзья» смотрим глазами постороннего друга (id 0 — никто)
+    [friendId, user.share_calendar !== false || isMe, isMe ? 0 : req.me.id]
+  );
+  const [days, social] = await Promise.all([daysP, withSocial(workouts.rows, req.me.id, starts)]);
 
   // Личные рекорды: лучший результат в каждой дисциплине (если человек не скрыл их)
   let records = null;
-  if (user.show_records !== false || friendId === req.me.id) {
-    const starts = (await startsByUser([friendId]))[friendId] || [];
-    records = bestResults(starts).map((b) => ({
+  if (user.show_records !== false || isMe) {
+    records = bestResults(starts[friendId] || []).map((b) => ({
       discipline: b.discipline, result: b.result, date: b.date === '1900-01-01' ? null : b.date, name: b.name || null,
       manual: String(b.id).startsWith('m'),
     }));
@@ -714,7 +719,7 @@ router.get('/:friendId/profile', async (req, res) => {
     stats: stats.rows[0],
     records,
     days: days.rows.map((d) => ({ date: d.date, type: d.type, public: d.public, id: d.public ? d.id : null })),
-    workouts: await withSocial(workouts.rows, req.me.id),
+    workouts: social,
   });
 });
 
