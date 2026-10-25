@@ -24,8 +24,7 @@ const REACTIONS = ['🔥', '👏', '💪', '🚀'];
 
 // Публичные поля человека, которые видят друзья (без фото целиком — фото грузится отдельно)
 const PUBLIC_USER = `u.id, u.username, u.first_name, u.last_name, u.current_streak, u.longest_streak, u.sport, u.discipline,
-  CASE WHEN u.avatar_data IS NOT NULL THEN left(md5(u.avatar_data), 8)
-       WHEN u.photo_url IS NOT NULL THEN 'tg' END AS avatar_v`;
+  COALESCE(u.avatar_ver, CASE WHEN u.photo_url IS NOT NULL THEN 'tg' END) AS avatar_v`;
 
 async function getInternalUser(telegramId) {
   const res = await query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
@@ -175,23 +174,48 @@ async function withSocial(workouts, meId, knownStarts) {
 //  GET /api/friends/avatar/:userId?auth=... — картинка для <img>.
 //  Картинка не умеет слать заголовки, поэтому подпись Telegram передаём в адресе.
 // ===================================================================
+// Чтобы десяток фото в списке не давал десятки запросов к базе: проверку «это мой друг» помним минуту,
+// а сами картинки (они не меняются, пока не сменится версия ?v=) — в памяти сервера.
+const avaOk = new Map();   // `${auth}|${userId}` -> до какого момента проверка действует
+const avaBuf = new Map();  // `${userId}:${v}` -> { type, buf }
+let avaBytes = 0;
+function avaRemember(key, type, buf) {
+  if (buf.length > 600_000) return;
+  while (avaBytes + buf.length > 40_000_000 && avaBuf.size) { const k = avaBuf.keys().next().value; avaBytes -= avaBuf.get(k).buf.length; avaBuf.delete(k); }
+  avaBuf.set(key, { type, buf }); avaBytes += buf.length;
+}
 router.get('/avatar/:userId', async (req, res) => {
-  const auth = await resolveAuth(req.query.auth);
-  if (!auth?.user) return res.status(401).end();
-  const me = await getInternalUser(auth.user.id);
-  if (!me || !(await areFriends(me.id, req.params.userId))) return res.status(403).end();
+  const uid = parseInt(req.params.userId, 10);
+  if (!uid) return res.status(400).end();
+  const okKey = `${req.query.auth}|${uid}`;
+  const cached = req.query.v ? avaBuf.get(`${uid}:${req.query.v}`) : null;
+  if (!(avaOk.get(okKey) > Date.now())) {
+    const auth = await resolveAuth(req.query.auth);
+    if (!auth?.user) return res.status(401).end();
+    const me = await getInternalUser(auth.user.id);
+    if (!me || !(await areFriends(me.id, uid))) return res.status(403).end();
+    if (avaOk.size > 5000) avaOk.clear();
+    avaOk.set(okKey, Date.now() + 60_000);
+  }
+  if (cached) {
+    res.set('Content-Type', cached.type);
+    res.set('Cache-Control', 'private, max-age=31536000, immutable');
+    return res.send(cached.buf);
+  }
 
-  const r = await query('SELECT avatar_data, photo_url FROM users WHERE id = $1', [parseInt(req.params.userId, 10)]);
+  const r = await query('SELECT avatar_data, photo_url FROM users WHERE id = $1', [uid]);
   const u = r.rows[0];
   if (!u) return res.status(404).end();
 
   if (u.avatar_data) {
     const m = u.avatar_data.match(/^data:(image\/[a-z]+);base64,(.*)$/);
     if (!m) return res.status(404).end();
+    const buf = Buffer.from(m[2], 'base64');
+    if (req.query.v) avaRemember(`${uid}:${req.query.v}`, m[1], buf);
     res.set('Content-Type', m[1]);
     // адрес с версией (?v=…) меняется вместе с фото — можно хранить «навсегда»
     res.set('Cache-Control', req.query.v ? 'private, max-age=31536000, immutable' : 'private, max-age=86400');
-    return res.send(Buffer.from(m[2], 'base64'));
+    return res.send(buf);
   }
   if (u.photo_url) { res.set('Cache-Control', 'private, max-age=86400'); return res.redirect(u.photo_url); }
   res.status(404).end();
