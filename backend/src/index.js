@@ -58,10 +58,12 @@ app.use(express.json());
 app.post('/api/chat', requireTelegramAuth, aiGuard);
 app.post('/api/workouts/parse', requireTelegramAuth, aiGuard);
 app.post('/api/workouts/:id/feedback', requireTelegramAuth, aiGuard);
+app.post('/api/workouts/:id/volume', requireTelegramAuth, aiGuard);
 app.get('/api/insights', requireTelegramAuth, aiGuard);
 app.get('/api/insights/plan', requireTelegramAuth, aiGuard);
 app.post('/api/workouts/parse', requireTelegramAuth, aiQuota('parse'));
 app.post('/api/workouts/:id/feedback', requireTelegramAuth, aiQuota('feedback', { consume: false }));
+app.post('/api/workouts/:id/volume', requireTelegramAuth, aiQuota('volume'));
 app.get('/api/insights/plan', requireTelegramAuth, aiQuota('plan'));
 app.get('/api/insights', requireTelegramAuth, aiQuota('insights'));
 
