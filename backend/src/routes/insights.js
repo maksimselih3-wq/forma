@@ -2,7 +2,7 @@ import { AI_DOWN_MESSAGE } from '../aiGuard.js';
 import { Router } from 'express';
 import { query, WORKOUT_SELECT } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
-import { getPeriodInsight, athleteContext } from '../ai.js';
+import { getPeriodInsight, athleteContext, getWeekPlan } from '../ai.js';
 import { getClientToday } from '../streak.js';
 
 const router = Router();
@@ -50,6 +50,26 @@ router.get('/', requireTelegramAuth, async (req, res) => {
     console.error('Insight generation failed:', err.message);
     if (err?.aiDown) return res.status(503).json({ error: AI_DOWN_MESSAGE, ai_down: true });
     res.status(500).json({ error: 'Не удалось получить разбор от Fom' });
+  }
+});
+
+// GET /api/insights/plan — примерный план на неделю с учётом дисциплины
+router.get('/plan', requireTelegramAuth, async (req, res) => {
+  const user = await getInternalUser(req.telegramUser.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const today = getClientToday(req);
+  const from = new Date(new Date(today + 'T00:00:00Z').getTime() - 21 * 86400000).toISOString().slice(0, 10);
+  try {
+    const result = await query(
+      `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date AND w.date <= $3::date AND COALESCE(w.source, '') <> 'strava' ORDER BY w.date ASC`,
+      [user.id, from, today]
+    );
+    const plan = await getWeekPlan(result.rows, await athleteContext(user.id), user.discipline || '', today);
+    res.json({ plan });
+  } catch (err) {
+    console.error('Plan generation failed:', err.message);
+    if (err?.aiDown) return res.status(503).json({ error: AI_DOWN_MESSAGE, ai_down: true });
+    res.status(500).json({ error: 'Не удалось составить план' });
   }
 });
 
