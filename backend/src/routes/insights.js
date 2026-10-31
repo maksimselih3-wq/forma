@@ -44,7 +44,8 @@ router.get('/', requireTelegramAuth, async (req, res) => {
       return res.json({ insight: null, workoutsCount: 0, period });
     }
 
-    const insight = await getPeriodInsight(result.rows, period, await athleteContext(user.id));
+    const focus = String(req.query.focus || '').split(',').map((x) => x.trim()).filter((x) => /^[a-z]{2,12}$/.test(x)).slice(0, 4);
+    const insight = await getPeriodInsight(result.rows, period, await athleteContext(user.id), { discipline: user.discipline || '', focus });
     res.json({ insight, workoutsCount: result.rows.length, period });
   } catch (err) {
     console.error('Insight generation failed:', err.message);
