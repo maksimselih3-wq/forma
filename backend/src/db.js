@@ -74,6 +74,8 @@ const MIGRATIONS = [
   `ALTER TABLE workout_exercises ADD COLUMN IF NOT EXISTS kind TEXT`,
   // своё фото профиля (картинка, сжатая на телефоне)
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data TEXT`,
+  // у дней отдыха оценок нет: убираем «5/10 по умолчанию», которые попадали в записи раньше
+  `UPDATE workouts SET feeling = NULL, rpe = NULL WHERE type = 'rest' AND (feeling IS NOT NULL OR rpe IS NOT NULL)`,
   // версия фото считается один раз при записи, а не при каждом чтении списка друзей/ленты (раньше md5 по каждой картинке в каждом запросе)
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_ver TEXT GENERATED ALWAYS AS (left(md5(avatar_data), 8)) STORED`,
   // друзья: видят ли они мой календарь целиком и когда я последний раз смотрел активность
