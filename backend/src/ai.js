@@ -343,18 +343,22 @@ export async function athleteContext(userId, { forCoach = false } = {}) {
 
 
 // Что важно знать про дисциплину спортсмена: Fom учитывает это в каждом ответе
-function disciplineExpertise(discipline) {
+export function disciplineGroupOf(discipline) {
   const s = String(discipline || '').toLowerCase();
-  if (!s) return '';
-  let g = null;
-  if (/многобор|десятибор|семибор|пятибор/.test(s)) g = 'combined';
-  else if (/барьер|с\/б/.test(s)) g = 'hurdles';
-  else if (/ходьб/.test(s)) g = 'walk';
-  else if (/длинн|марафон|5000|10 ?000|стипл|кросс|3000/.test(s)) g = 'long';
-  else if (/средн|800|1500|миля/.test(s)) g = 'middle';
-  else if (/спринт|^60|100 ?м|200 ?м|400 ?м|эстафет/.test(s)) g = 'sprint';
-  else if (/метан|ядр|диск|копь|молот/.test(s)) g = 'throws';
-  else if (/прыж|длина|тройн|высот|шест/.test(s)) g = 'jumps';
+  if (!s) return null;
+  if (/многобор|десятибор|семибор|пятибор/.test(s)) return 'combined';
+  if (/барьер|с\/б/.test(s)) return 'hurdles';
+  if (/ходьб/.test(s)) return 'walk';
+  if (/длинн|марафон|5000|10 ?000|стипл|кросс|3000/.test(s)) return 'long';
+  if (/средн|800|1500|миля/.test(s)) return 'middle';
+  if (/спринт|^60|100 ?м|200 ?м|400 ?м|эстафет/.test(s)) return 'sprint';
+  if (/метан|ядр|диск|копь|молот/.test(s)) return 'throws';
+  if (/прыж|длина|тройн|высот|шест/.test(s)) return 'jumps';
+  return null;
+}
+function disciplineExpertise(discipline) {
+  const g = disciplineGroupOf(discipline);
+  if (!discipline) return '';
   const K = {
     sprint: 'Специфика (спринт): главное — максимальная скорость, старт, техника бега и скоростная выносливость; объём в км вторичен, важны качество отрезков, полный отдых между ними (3–8 мин), сила и взрывные ОФП. Тревожные признаки: падение скорости на тех же отрезках, жалобы на заднюю поверхность бедра, высокий RPE при коротких отрезках.',
     hurdles: 'Специфика (барьерный бег): помимо скорости важны ритм между барьерами, атака и техника прохождения, гибкость и ОФП. Смотри на качество ритма, отрезки с барьерами и без, силовую и гибкость. Риски: травмы бедра и паха, перегруз на скоростных днях.',
@@ -545,12 +549,52 @@ function mondayOfStr(str) {
   const dow = new Date(str + 'T00:00:00Z').getUTCDay();
   return shiftDate(str, -((dow + 6) % 7));
 }
+
+// ---------- Попытки (прыжки, броски), скоростная работа, силовая: считает программа ----------
+const numPos = (v) => { const n = parseFloat(String(v ?? '').replace(',', '.')); return Number.isFinite(n) && n > 0 ? n : 0; };
+export function attemptsOf(w) {
+  return (Array.isArray(w?.exercises) ? w.exercises : []).filter((e) => e.kind === 'tech').reduce((s, e) => s + Math.floor(numPos(e.sets)), 0);
+}
+function fastMeters(w) { // метры отрезков до 400 м
+  return (Array.isArray(w?.sets) ? w.sets : []).reduce((s, x) => { const d = Number(x.distance_m) || 0; return d > 0 && d <= 400 ? s + d * repsCount(x.reps) : s; }, 0);
+}
+function strengthStats(list) {
+  let sets = 0, ton = 0;
+  for (const w of list) for (const e of (Array.isArray(w.exercises) ? w.exercises : [])) {
+    if (e.kind === 'tech') continue;
+    const n = Math.floor(numPos(e.sets)) || (e.name ? 1 : 0);
+    sets += n;
+    ton += n * repsCount(e.reps) * numPos(e.weight) / 1000;
+  }
+  return { sets, ton: Math.round(ton * 10) / 10 };
+}
+// Лучший результат в каждом виде попыток («Прыжок с разбега» → 6.20) и число попыток по тренировкам
+function techSummary(workouts) {
+  const best = new Map();
+  const perDay = [];
+  for (const w of workouts) {
+    if (w.type !== 'training') continue;
+    const n = attemptsOf(w);
+    if (n) perDay.push(`${String(w.date).slice(0, 10)}: ${n}`);
+    for (const e of (Array.isArray(w.exercises) ? w.exercises : [])) {
+      if (e.kind !== 'tech' || !e.name) continue;
+      const v = numPos(e.reps);
+      const key = String(e.name).trim().toLowerCase();
+      const cur = best.get(key) || { name: String(e.name).trim(), best: 0, attempts: 0 };
+      cur.attempts += Math.floor(numPos(e.sets));
+      if (v > cur.best) cur.best = v;
+      best.set(key, cur);
+    }
+  }
+  return { perDay, kinds: [...best.values()] };
+}
 function periodLine(label, workouts, from, to) {
   const list = workouts.filter((w) => { const d = String(w.date).slice(0, 10); return d >= from && d <= to; });
   const tr = list.filter((w) => w.type === 'training');
   const km = tr.reduce((a, w) => a + volumeKm(w), 0);
   const rest = list.filter((w) => w.type === 'rest').length;
-  return `- ${label} (${from} — ${to}): беговой объём ${kmFmt(km)} км, тренировок ${tr.length}, дней отдыха ${rest}`;
+  const att = tr.reduce((s, w) => s + attemptsOf(w), 0);
+  return `- ${label} (${from} — ${to}): беговой объём ${kmFmt(km)} км, тренировок ${tr.length}, дней отдыха ${rest}${att ? `, попыток (прыжков/бросков) ${att}` : ''}`;
 }
 /**
  * Готовые итоги по неделям — модель берёт их, а не складывает десятки чисел сама (так она ошибалась).
@@ -935,17 +979,68 @@ async function callClaude({ model, maxTokens, system, messages }) {
 /**
  * Разбор нагрузки за период (неделя/месяц): тренды, риск перегруза, рекомендации.
  */
-export async function getPeriodInsight(workouts, period, athlete = '') {
+const INSIGHT_FOCUS = {
+  km: 'беговой объём (км)', fast: 'скоростная работа (метры отрезков до 400 м)', reps: 'число отрезков',
+  attempts: 'число попыток (прыжков/бросков)', ofp: 'силовая и ОФП (подходы)', tonn: 'силовой тоннаж',
+  count: 'число тренировок', rest: 'дни отдыха', feelrpe: 'самочувствие и нагрузка (RPE)',
+};
+export async function getPeriodInsight(workouts, period, athlete = '', { discipline = '', focus = [] } = {}) {
   const summary = workouts.map(describeWorkout).join('\n');
+  const group = disciplineGroupOf(discipline);
+  const tr = workouts.filter((w) => w.type === 'training');
+  const km = workouts.reduce((s, w) => s + volumeKm(w), 0);
+  const att = tr.reduce((s, w) => s + attemptsOf(w), 0);
+  const fast = tr.reduce((s, w) => s + fastMeters(w), 0);
+  const reps = tr.reduce((s, w) => s + (w.sets || []).reduce((q, x) => q + ((Number(x.distance_m) || Number(x.duration_s)) ? repsCount(x.reps) : 0), 0), 0);
+  const st = strengthStats(tr);
+  const tech = techSummary(workouts);
+  const jumpish = group === 'jumps' || group === 'throws';
+
+  // Что именно показать модели как главное — зависит от дисциплины
+  const facts = [];
+  if (jumpish) {
+    facts.push(`Попытки (посчитаны программой, бери эти числа): всего ${att}${tech.perDay.length ? ` (по датам: ${tech.perDay.join(', ')})` : ''}.`);
+    if (tech.kinds.length) facts.push(`По видам: ${tech.kinds.map((k) => `${k.name} — ${k.attempts} поп.${k.best ? `, лучший результат ${String(k.best).replace('.', ',')}` : ''}`).join('; ')}.`);
+    facts.push(`Беговая работа (разбег, скорость, разминки) — вторична: ${kmFmt(km)} км за период. Не делай её главным показателем и не обсуждай «беговой объём» как цель.`);
+  } else if (group === 'sprint' || group === 'hurdles') {
+    facts.push(`Скоростная работа (посчитана программой): отрезков до 400 м — ${fast} м суммарно, всего отрезков ${reps}. Общий беговой объём ${kmFmt(km)} км вторичен: для спринтера важны качество, скорость и полный отдых, а не километры.`);
+    if (att) facts.push(`Попытки/техника: ${att} поп.`);
+  } else if (group === 'combined') {
+    facts.push(`Беговой объём ${kmFmt(km)} км (примерно), попыток в прыжках/метаниях ${att}. Смотри баланс между видами.`);
+  } else {
+    facts.push(`Беговой объём за этот период (посчитан программой точно так же, как в приложении — бери это число и НЕ пересчитывай): ${kmFmt(km)} км. Минуты «по времени» и ОФП сюда не входят.`);
+    if (att) facts.push(`Попытки/техника: ${att} поп.`);
+  }
+  if (st.sets) facts.push(`Силовая и ОФП: ${st.sets} подходов${st.ton ? `, тоннаж ≈ ${String(st.ton).replace('.', ',')} т` : ''}.`);
+
+  const focusNames = (Array.isArray(focus) ? focus : []).map((k) => INSIGHT_FOCUS[k]).filter(Boolean);
+  const focusLine = focusNames.length ? `Спортсмен сам настроил «Разбор» на показатели: ${focusNames.join(', ')}. Разбери их в первую очередь и подробнее, остальное — коротко.` : '';
+
+  const sections = jumpish
+    ? `**Объём и частота:** сколько тренировок и дней отдыха, сколько попыток (прыжков/бросков) за период и за тренировку.
+**Результаты и техника:** лучшие результаты, стабильность попыток, динамика; если попыток мало или их нет — так и скажи.
+**Динамика нагрузки:** растёт ли RPE и число попыток, есть ли резкие скачки; отдельно — силовая и скоростная работа.
+**Восстановление и самочувствие:** как менялось самочувствие, есть ли тревожные признаки (падающее самочувствие при росте нагрузки, жалобы на суставы, спину, плечо). Пульс — только если он есть в записях.`
+    : (group === 'sprint' || group === 'hurdles')
+      ? `**Объём и частота:** сколько тренировок и дней отдыха, сколько скоростной работы (метры и число отрезков), полный ли отдых между отрезками.
+**Динамика нагрузки:** растёт ли RPE и скоростной объём, есть ли резкие скачки; отдельно — сила и ОФП.
+**Скорость и качество:** видна ли динамика времён на отрезках (только если они записаны), что с техникой.
+**Пульс и восстановление:** только если в записях есть пульс.
+**Самочувствие:** как менялось, есть ли тревожные признаки.`
+      : `**Объём и частота:** сколько тренировок и дней отдыха, общий беговой объём (км/минуты), есть ли баланс.
+**Динамика нагрузки:** растёт ли RPE и объём, есть ли резкие скачки.
+**Пульс и восстановление:** только если в записях есть пульс — как меняются средний/максимальный и насколько хорошо пульс опускается в паузах.
+**Самочувствие:** как менялось, есть ли тревожные признаки (падающее самочувствие при растущей нагрузке).`;
 
   const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
 
-Сейчас ты как помощник, который раз в ${period === 'month' ? 'месяц' : 'неделю'} делает разбор тренировочного процесса спортсмена, как бухгалтер сводит баланс.
+Сейчас ты как помощник, который раз в ${period === 'month' ? 'месяц' : 'неделю'} делает разбор тренировочного процесса спортсмена, как бухгалтер сводит баланс. Учитывай дисциплину спортсмена${discipline ? ` (${discipline})` : ''}: оценивай нагрузку теми показателями, которые для неё главные (для прыгунов и метателей — попытки и результаты, для спринтеров — скоростная работа и качество, для стайеров — километраж), а не одним только беговым объёмом.
 
 Вот записи с начала ${period === 'month' ? 'текущего месяца' : 'текущей недели (с понедельника)'} по сегодня:
 ${summary || 'записей нет'}
 
-Беговой объём за этот период (посчитан программой точно так же, как в приложении — бери это число и НЕ пересчитывай): ${kmFmt(workouts.reduce((a, w) => a + volumeKm(w), 0))} км. Минуты «по времени» и ОФП сюда не входят.
+${facts.join('\n')}
+${focusLine}
 ${timeOfDayFacts(workouts)}
 
 ${TIME_RULE}
@@ -961,14 +1056,11 @@ ${PACE_RULE}
 ${COMP_RULE}
 
 Дай структурированный разбор на русском, используя заголовки **жирным**:
-**Объём и частота:** сколько тренировок и дней отдыха, общий беговой объём (км/минуты), есть ли баланс.
-**Динамика нагрузки:** растёт ли RPE и объём, есть ли резкие скачки.
-**Пульс и восстановление:** только если в записях есть пульс — как меняются средний/максимальный и насколько хорошо пульс опускается в паузах.
-**Самочувствие:** как менялось, есть ли тревожные признаки (падающее самочувствие при растущей нагрузке).
+${sections}
 **Риск перегрузки:** явно скажи, есть он или нет, и почему.
 **Что обсудить с тренером:** 1-2 пункта — наблюдения, которые стоит показать тренеру. Не составляй план на будущее.
 
-Пиши тепло, но по делу. Если данных мало — так и скажи, не выдумывай.`;
+Пиши тепло, но по делу. Если данных мало — так и скажи, не выдумывай. Дни отдыха оценок не имеют — не упоминай их самочувствие и RPE.`;
 
   return callClaude({
     model: MODEL_INSIGHTS,
