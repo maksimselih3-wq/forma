@@ -417,16 +417,20 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       workout = ins.rows[0];
     }
 
-    await saveChildren(client, workout.id, sets, exercises);
-    const visibleTo = await saveVisibleTo(client, workout.id, user.id, workout.visibility, req.body.visible_to);
+    // у только что созданной записи (особенно у дня отдыха) чистить нечего — лишние обращения к базе пропускаем
+    const isNew = !found.rows.length;
+    if (!(isNew && !sets.length && !exercises.length)) await saveChildren(client, workout.id, sets, exercises);
+    const visibleTo = (isNew && workout.visibility !== 'custom') ? [] : await saveVisibleTo(client, workout.id, user.id, workout.visibility, req.body.visible_to);
     const startTime = isTraining ? cleanTime(req.body.start_time) : null;
     const endTime = isTraining ? cleanTime(req.body.end_time) : null;
     const totalKm = isTraining ? cleanTotalKm(req.body.total_km) : null;
-    await client.query('UPDATE workouts SET start_time = $1, end_time = $2, total_km = $4 WHERE id = $3', [startTime, endTime, workout.id, totalKm]);
+    const place = cleanPlace(req.body, isTraining);
+    // время, объём и место — одним запросом
+    await client.query(
+      `UPDATE workouts SET start_time = $1, end_time = $2, total_km = $3, place = $4, place_lat = $5, place_lon = $6, altitude_m = $7, camp = $8 WHERE id = $9`,
+      [startTime, endTime, totalKm, place.place, place.lat, place.lon, place.alt, place.camp, workout.id]);
     workout.total_km = totalKm;
     workout.start_time = startTime; workout.end_time = endTime;
-    const place = cleanPlace(req.body, isTraining);
-    await savePlace(client, workout.id, place);
     Object.assign(workout, { place: place.place, place_lat: place.lat, place_lon: place.lon, altitude_m: place.alt, camp: place.camp });
 
     await client.query('COMMIT');
