@@ -5,7 +5,7 @@ dotenv.config();
 
 const { Pool, types } = pg;
 
-// Тип DATE в Postgres (код 1082) отдаём как есть — строкой 'ГГГГ-ММ-ДД'.
+// Тип DATE в Postgres (код 1082) отдаём как есть - строкой 'ГГГГ-ММ-ДД'.
 // Без этого pg превращает дату в объект Date с часовым поясом сервера,
 // и на фронт приходит что-то вроде '2026-09-21T00:00:00.000Z'.
 types.setTypeParser(1082, (val) => val);
@@ -14,12 +14,12 @@ export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL?.includes('supabase') ? { rejectUnauthorized: false } : false,
   // Пулер Supabase в режиме сессий пускает всего 15 подключений на всех. При обновлении на Railway старая и новая
-  // версии работают вместе — по 10 подключений у каждой не помещались (ошибка EMAXCONNSESSION). Берём меньше.
+  // версии работают вместе - по 10 подключений у каждой не помещались (ошибка EMAXCONNSESSION). Берём меньше.
   max: Number(process.env.PG_POOL_MAX) || 5,
   idleTimeoutMillis: 20000,
 });
 
-// Если у Supabase кончились места в пуле (EMAXCONNSESSION — бывает на пару секунд при обновлении сервера, пока
+// Если у Supabase кончились места в пуле (EMAXCONNSESSION - бывает на пару секунд при обновлении сервера, пока
 // старая версия ещё не закрыла свои подключения), не падаем сразу, а ждём и пробуем снова.
 const isBusy = (e) => /EMAXCONNSESSION|max clients reached|too many clients/i.test(String(e?.message || e));
 const origConnect = pool.connect.bind(pool);
@@ -48,7 +48,7 @@ export const WORKOUT_SELECT = `
     COALESCE((SELECT json_agg(e.* ORDER BY e.order_index) FROM workout_exercises e WHERE e.workout_id = w.id), '[]') AS exercises
   FROM workouts w`;
 
-// Автоматическое обновление базы при запуске сервера — ничего не нужно делать руками в Supabase.
+// Автоматическое обновление базы при запуске сервера - ничего не нужно делать руками в Supabase.
 // IF NOT EXISTS: если поле/таблица уже есть, команда просто ничего не сделает.
 const MIGRATIONS = [
   // пульс
@@ -67,10 +67,10 @@ const MIGRATIONS = [
      weight TEXT
    )`,
   `CREATE INDEX IF NOT EXISTS idx_exercises_workout ON workout_exercises(workout_id)`,
-  // быстрый список записей: к каждой записи подтягиваются отрезки (иначе — перебор всей таблицы)
+  // быстрый список записей: к каждой записи подтягиваются отрезки (иначе - перебор всей таблицы)
   `CREATE INDEX IF NOT EXISTS idx_sets_workout ON workout_sets(workout_id)`,
   `CREATE INDEX IF NOT EXISTS idx_workouts_user_date ON workouts(user_id, date DESC)`,
-  // kind = 'tech' — попытки в прыжках и метаниях (техника), остальное — силовая/ОФП
+  // kind = 'tech' - попытки в прыжках и метаниях (техника), остальное - силовая/ОФП
   `ALTER TABLE workout_exercises ADD COLUMN IF NOT EXISTS kind TEXT`,
   // своё фото профиля (картинка, сжатая на телефоне)
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data TEXT`,
@@ -101,9 +101,9 @@ const MIGRATIONS = [
    )`,
   `CREATE INDEX IF NOT EXISTS idx_comments_workout ON workout_comments(workout_id)`,
   `CREATE INDEX IF NOT EXISTS idx_friendships_friend ON friendships(friend_id)`,
-  // фамилия из Telegram — чтобы друзья видели имя полностью
+  // фамилия из Telegram - чтобы друзья видели имя полностью
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT`,
-  // вид спорта и дисциплина — отметка в профиле
+  // вид спорта и дисциплина - отметка в профиле
   `ALTER TABLE users
      ADD COLUMN IF NOT EXISTS sport TEXT,
      ADD COLUMN IF NOT EXISTS discipline TEXT`,
@@ -137,7 +137,7 @@ const MIGRATIONS = [
 ];
 
 // Если где-то в маршруте случится непредвиденная ошибка (например, мусор вместо id),
-// сервер не должен падать целиком — пишем ошибку в лог и работаем дальше.
+// сервер не должен падать целиком - пишем ошибку в лог и работаем дальше.
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled error:', err?.message || err);
 });
