@@ -54,7 +54,7 @@ router.get('/', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// GET /api/insights/plan — примерный план на неделю с учётом дисциплины
+// GET /api/insights/plan - примерный план на неделю с учётом дисциплины
 router.get('/plan', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
