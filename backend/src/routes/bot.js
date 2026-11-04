@@ -114,9 +114,35 @@ startGiveawayScheduler(sendText);
 // Вечернее напоминание: в 21:00 (МСК), если за сегодня ещё нет записи
 // Сначала push в приложение; если у человека его нет или доставка не вышла - обычное сообщение бота
 const sendTgHtml = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
-const sendHtml = async (chatId, text) => {
-  try { if (await sendPush(chatId, plainPush(text)) > 0) return { ok: true }; } catch (e) { /* уйдёт в Telegram */ }
-  return sendTgHtml(chatId, text);
+
+// Одно «живое» сообщение каждого вида: новое заменяет старое (старое удаляем, если Telegram позволяет - до 48 часов)
+const botMsgsReady = query(`CREATE TABLE IF NOT EXISTS bot_msgs (
+  telegram_id BIGINT NOT NULL, kind TEXT NOT NULL, message_id BIGINT NOT NULL, at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (telegram_id, kind))`).catch(() => 0);
+async function sendReplacing(chatId, kind, payload) {
+  await botMsgsReady;
+  try {
+    const old = await query('SELECT message_id FROM bot_msgs WHERE telegram_id = $1 AND kind = $2', [chatId, kind]);
+    if (old.rows[0]) await tg('deleteMessage', { chat_id: chatId, message_id: Number(old.rows[0].message_id) });
+  } catch (e) { /* не вышло удалить - не страшно */ }
+  const res = await tg('sendMessage', { chat_id: chatId, ...payload });
+  const mid = res?.result?.message_id;
+  if (res?.ok && mid) {
+    await query(`INSERT INTO bot_msgs (telegram_id, kind, message_id) VALUES ($1, $2, $3)
+      ON CONFLICT (telegram_id, kind) DO UPDATE SET message_id = EXCLUDED.message_id, at = now()`, [chatId, kind, mid]).catch(() => 0);
+  }
+  return res;
+}
+const sendHtml = async (chatId, text, kind) => {
+  try {
+    if (await sendPush(chatId, plainPush(text)) > 0) {
+      // push дошёл - старое напоминание в чате больше не нужно
+      if (kind) { try { await botMsgsReady; const o = await query('SELECT message_id FROM bot_msgs WHERE telegram_id=$1 AND kind=$2', [chatId, kind]); if (o.rows[0]) { await tg('deleteMessage', { chat_id: chatId, message_id: Number(o.rows[0].message_id) }); await query('DELETE FROM bot_msgs WHERE telegram_id=$1 AND kind=$2', [chatId, kind]); } } catch (e) {} }
+      return { ok: true };
+    }
+  } catch (e) { /* уйдёт в Telegram */ }
+  const payload = { text, parse_mode: 'HTML', reply_markup: OPEN_BUTTON };
+  return kind ? sendReplacing(chatId, kind, payload) : sendTgHtml(chatId, text);
 };
 startReminderScheduler(sendHtml);
 
@@ -299,7 +325,7 @@ ${APP_URL}
 2. Нажми «⋯» справа вверху.
 3. Выбери «Установить приложение» (или «Добавить на главный экран») и подтверди.
 4. Открой Forma с главного экрана и войди - через Telegram или по почте. Дневник и серия те же.`;
-const HOME_FOOT = '\n\nЕсли что-то не получилось - просто напиши сюда.';
+const HOME_FOOT = '\n\nЕсли что-то не получилось - пиши в <a href="https://t.me/w_m9ik">поддержку</a>.';
 const HOME_MENU = { inline_keyboard: [[{ text: '🍎 iPhone', callback_data: 'hp:ios' }, { text: '🤖 Android', callback_data: 'hp:and' }]] };
 const HOME_BACK = { inline_keyboard: [[{ text: '← Выбрать другой телефон', callback_data: 'hp:menu' }]] };
 const IOS_HOME_TEXT = HOME_INTRO; // сообщение рассылки: короткое вступление и выбор телефона
@@ -315,7 +341,7 @@ async function sendIosBroadcast(adminChat) {
        AND telegram_id NOT IN (SELECT telegram_id FROM broadcast_log WHERE key = $1)`, [IOS_BROADCAST_KEY]);
   let sent = 0, failed = 0;
   for (const row of r.rows) {
-    const res = await tg('sendMessage', { chat_id: row.telegram_id, text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: HOME_MENU });
+    const res = await sendReplacing(row.telegram_id, 'home', { text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: HOME_MENU });
     const ok = !!res?.ok;
     ok ? sent++ : failed++;
     await query('INSERT INTO broadcast_log (key, telegram_id, ok) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [IOS_BROADCAST_KEY, row.telegram_id, ok]).catch(() => 0);
