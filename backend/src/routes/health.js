@@ -9,7 +9,7 @@ import {
 
 /**
  * Раздел «Здоровье»: анализы крови, питание по фото, БАДы.
- * Все данные видит только сам спортсмен (и Fom в его ответах). Тренеру и друзьям — не показываются.
+ * Все данные видит только сам спортсмен (и Fom в его ответах). Тренеру и друзьям - не показываются.
  *
  *  Анализы:  GET /blood · POST /blood/scan {image} · POST /blood · POST /blood/:id/fom · DELETE /blood/:id
  *  Питание:  GET /food?date= · POST /food/scan {image?, text?} · POST /food · DELETE /food/:id · POST /food/fom {date}
@@ -149,7 +149,7 @@ function testOut(t) {
   };
 }
 
-// Нагрузка за 3 недели до сдачи анализа — готовые цифры для Fom
+// Нагрузка за 3 недели до сдачи анализа - готовые цифры для Fom
 async function loadBefore(uid, date) {
   const from = addDays(date, -21);
   const ws = (await query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date AND w.date <= $3::date AND COALESCE(w.source, '') <> 'strava' ORDER BY w.date DESC`, [uid, from, date])).rows;
@@ -161,8 +161,8 @@ async function loadBefore(uid, date) {
   const high = tr.filter((w) => Number(w.altitude_m) >= 1000);
   const last2 = tr.filter((w) => day(w) >= addDays(date, -2));
   const lines = [
-    `за 21 день: ${tr.length} тренировок, ≈${f1(km)} км, тяжёлых (RPE 8+) — ${heavy.length}`,
-    lastHeavy ? `последняя тяжёлая — ${day(lastHeavy)} (за ${Math.round((Date.parse(date) - Date.parse(day(lastHeavy))) / 86400000)} дн. до анализа)` : 'тяжёлых не было',
+    `за 21 день: ${tr.length} тренировок, ≈${f1(km)} км, тяжёлых (RPE 8+) - ${heavy.length}`,
+    lastHeavy ? `последняя тяжёлая - ${day(lastHeavy)} (за ${Math.round((Date.parse(date) - Date.parse(day(lastHeavy))) / 86400000)} дн. до анализа)` : 'тяжёлых не было',
     last2.length ? `в 2 дня перед анализом: ${last2.map((w) => `${day(w)} RPE ${w.rpe ?? '-'}, ${f1(volumeKm(w))} км`).join('; ')}` : 'в 2 дня перед анализом тренировок не было',
     high.length ? `тренировок на высоте от 1000 м: ${high.length} (последняя ${day(high[0])}, ≈${high[0].altitude_m} м)` : '',
   ].filter(Boolean);
@@ -191,7 +191,7 @@ router.post('/blood/scan', async (req, res) => {
   const image = req.body.image;
   const isPdf = typeof image === 'string' && image.startsWith('data:application/pdf');
   if (typeof image !== 'string' || !(isPdf ? PDF_RE.test(image) : IMG_RE.test(image))) return res.status(400).json({ error: 'Нужно фото или PDF бланка' });
-  if (image.length > (isPdf ? 8_500_000 : 3_500_000)) return res.status(400).json({ error: isPdf ? 'PDF слишком большой — до 6 МБ' : 'Фото слишком большое' });
+  if (image.length > (isPdf ? 8_500_000 : 3_500_000)) return res.status(400).json({ error: isPdf ? 'PDF слишком большой - до 6 МБ' : 'Фото слишком большое' });
   if (!(await scanAllowed(req.me.id, 'blood'))) return res.status(429).json({ error: QUOTA_MESSAGES.scan_blood });
   try {
     const p = await scanBloodImage(image);
@@ -202,8 +202,8 @@ router.post('/blood/scan', async (req, res) => {
     });
   } catch (err) {
     console.error('Blood scan failed:', err.message);
-    await refundQuota(req.me.id, 'scan_blood').catch(() => {}); // ИИ не прочитал — попытка не потрачена
-    res.status(502).json({ error: 'Не получилось прочитать бланк. Попробуй фото ровнее и при хорошем свете — или внеси вручную.' });
+    await refundQuota(req.me.id, 'scan_blood').catch(() => {}); // ИИ не прочитал - попытка не потрачена
+    res.status(502).json({ error: 'Не получилось прочитать бланк. Попробуй фото ровнее и при хорошем свете - или внеси вручную.' });
   }
 });
 
@@ -244,7 +244,7 @@ router.post('/blood/:id/fom', async (req, res) => {
   } catch (err) {
     console.error('Blood comment failed:', err.message);
     await refundQuota(req.me.id, 'health').catch(() => {});
-    res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
+    res.status(502).json({ error: 'Fom сейчас не ответил - попробуй через минуту' });
   }
 });
 
@@ -254,7 +254,7 @@ router.delete('/blood/:id', async (req, res) => {
 });
 
 // ======================= ПИТАНИЕ =======================
-// Ориентиры на день (г на кг веса): белок 1,4–2,0 (при наборе — 1,6–2,2), углеводы — по нагрузке дня
+// Ориентиры на день (г на кг веса): белок 1,4–2,0 (при наборе - 1,6–2,2), углеводы - по нагрузке дня
 async function dayTargets(uid, date) {
   const kg = await currentWeight(uid);
   const goal = await weightGoal(uid, date);
@@ -323,7 +323,7 @@ router.post('/food/scan', async (req, res) => {
   } catch (err) {
     console.error('Food scan failed:', err.message);
     await refundQuota(req.me.id, 'scan_food').catch(() => {});
-    res.status(502).json({ error: 'Fom не смог оценить еду — попробуй ещё раз или впиши вручную' });
+    res.status(502).json({ error: 'Fom не смог оценить еду - попробуй ещё раз или впиши вручную' });
   }
 });
 
@@ -340,7 +340,7 @@ router.post('/food', async (req, res) => {
     `INSERT INTO meals (user_id, date, time, title, kcal, protein, fat, carbs, items, thumb)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
     [req.me.id, date, time, txt(b.title, 60) || 'Приём пищи', r0(num(b.kcal, 0, 10000)), num(b.protein, 0, 1000) ?? 0, num(b.fat, 0, 1000) ?? 0, num(b.carbs, 0, 2000) ?? 0, JSON.stringify(items), thumb]);
-  await query('DELETE FROM food_notes WHERE user_id = $1 AND date = $2', [req.me.id, date]); // день изменился — старый вывод Fom уже не про него
+  await query('DELETE FROM food_notes WHERE user_id = $1 AND date = $2', [req.me.id, date]); // день изменился - старый вывод Fom уже не про него
   res.json({ meal: mealOut(r.rows[0]) });
 });
 
@@ -359,10 +359,10 @@ router.post('/food/fom', async (req, res) => {
   const sum = (k) => r0(meals.reduce((a, m) => a + (Number(m[k]) || 0), 0));
   const facts = [
     `Дата: ${date}${date === today ? ' (сегодня, день ещё не закончился)' : ''}.`,
-    `Съедено по фото/записям (оценка): ${meals.length} ${meals.length % 10 === 1 && meals.length % 100 !== 11 ? 'приём' : [2, 3, 4].includes(meals.length % 10) && ![12, 13, 14].includes(meals.length % 100) ? 'приёма' : 'приёмов'} пищи — ${meals.map((m) => `${m.time ? m.time + ' ' : ''}${m.title} (≈${m.kcal} ккал, Б ${r0(m.protein)} г)`).join('; ')}.`,
+    `Съедено по фото/записям (оценка): ${meals.length} ${meals.length % 10 === 1 && meals.length % 100 !== 11 ? 'приём' : [2, 3, 4].includes(meals.length % 10) && ![12, 13, 14].includes(meals.length % 100) ? 'приёма' : 'приёмов'} пищи - ${meals.map((m) => `${m.time ? m.time + ' ' : ''}${m.title} (≈${m.kcal} ккал, Б ${r0(m.protein)} г)`).join('; ')}.`,
     `Итого ≈ ${sum('kcal')} ккал, белок ≈ ${sum('protein')} г, жиры ≈ ${sum('fat')} г, углеводы ≈ ${sum('carbs')} г.`,
     `Нагрузка дня (посчитано программой): ${LOAD_RU[t.load]}${t.trainings ? `, ${f1(t.km)} км, RPE до ${t.rpe ?? '-'}` : ''}.`,
-    t.weight ? `Вес ${f1(t.weight)} кг. Ориентиры для спортсмена на такой день: белок ${t.protein[0]}–${t.protein[1]} г (${t.protein_per_kg.join('–')} г/кг), углеводы ${t.carbs[0]}–${t.carbs[1]} г (${t.carbs_per_kg.join('–')} г/кг).` : 'Вес не указан — ориентиры в граммах не посчитаны.',
+    t.weight ? `Вес ${f1(t.weight)} кг. Ориентиры для спортсмена на такой день: белок ${t.protein[0]}–${t.protein[1]} г (${t.protein_per_kg.join('–')} г/кг), углеводы ${t.carbs[0]}–${t.carbs[1]} г (${t.carbs_per_kg.join('–')} г/кг).` : 'Вес не указан - ориентиры в граммах не посчитаны.',
     t.goal === 'gain' ? 'Цель на месяц: набрать массу.' : t.goal === 'loss' ? 'Цель на месяц: снизить вес.' : '',
   ].filter(Boolean).join('\n');
   if (!(await takeQuota(req.me.id, 'health')).ok) return res.status(429).json({ error: QUOTA_MESSAGES.health });
@@ -374,7 +374,7 @@ router.post('/food/fom', async (req, res) => {
   } catch (err) {
     console.error('Food comment failed:', err.message);
     await refundQuota(req.me.id, 'health').catch(() => {});
-    res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
+    res.status(502).json({ error: 'Fom сейчас не ответил - попробуй через минуту' });
   }
 });
 
