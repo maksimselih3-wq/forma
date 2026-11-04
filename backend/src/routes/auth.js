@@ -8,14 +8,14 @@ import { rememberReferral, settleReferral, socialReady, pioneerNo } from '../soc
 
 const router = Router();
 
-// Когда человек принял политику конфиденциальности (пока пусто — приложение покажет окно согласия)
+// Когда человек принял политику конфиденциальности (пока пусто - приложение покажет окно согласия)
 export const authReady = (async () => {
   await dbReady;
   try { await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_at TIMESTAMPTZ'); }
   catch (err) { console.error('consent_at column failed:', err.message); }
 })();
 
-// POST /api/auth/login — вызывается один раз при открытии Mini App
+// POST /api/auth/login - вызывается один раз при открытии Mini App
 router.post('/login', requireTelegramAuth, async (req, res) => {
   const tgUser = req.telegramUser;
   await remindersReady; // чтобы в ответе уже была настройка напоминаний
@@ -32,7 +32,7 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
     );
     user = inserted.rows[0];
   } else {
-    // Имя, username и фото в Telegram могут поменяться — обновляем, чтобы друзья находили и видели актуальное
+    // Имя, username и фото в Telegram могут поменяться - обновляем, чтобы друзья находили и видели актуальное
     const updated = await query(
       `UPDATE users SET username = $2, first_name = $3, last_name = $4, photo_url = COALESCE($5, photo_url)
        WHERE id = $1 RETURNING *`,
@@ -51,7 +51,7 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
         const name = [user.first_name, user.last_name].filter(Boolean).join(' ') || 'Твой друг';
         fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: inviter.telegram_id, text: `🎉 ${name} пришёл в Forma по твоему приглашению — вы теперь друзья! Когда он запишет 3 тренировки, тебе +1 билет в недельный розыгрыш 🎟` }),
+          body: JSON.stringify({ chat_id: inviter.telegram_id, text: `🎉 ${name} пришёл в Forma по твоему приглашению - вы теперь друзья! Когда он запишет 3 тренировки, тебе +1 билет в недельный розыгрыш 🎟` }),
         }).catch(() => {});
       }
     }
@@ -75,7 +75,7 @@ router.post('/login', requireTelegramAuth, async (req, res) => {
   res.json({ user });
 });
 
-// POST /api/auth/consent — человек принял политику конфиденциальности (фиксируем время один раз)
+// POST /api/auth/consent - человек принял политику конфиденциальности (фиксируем время один раз)
 router.post('/consent', requireTelegramAuth, async (req, res) => {
   try {
     await authReady;
@@ -88,9 +88,9 @@ router.post('/consent', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/avatar { image } — своё фото профиля.
+// POST /api/auth/avatar { image } - своё фото профиля.
 // Фото сжимается прямо на телефоне до маленькой картинки JPEG и хранится в базе.
-// { image: null } — удалить своё фото и вернуться к фото из Telegram.
+// { image: null } - удалить своё фото и вернуться к фото из Telegram.
 router.post('/avatar', requireTelegramAuth, async (req, res) => {
   const image = req.body.image;
 
@@ -109,7 +109,7 @@ router.post('/avatar', requireTelegramAuth, async (req, res) => {
   res.json({ ok: true, avatar_data: result.rows[0].avatar_data });
 });
 
-// POST /api/auth/reminder { enabled } — вечернее напоминание от бота вкл/выкл
+// POST /api/auth/reminder { enabled } - вечернее напоминание от бота вкл/выкл
 router.post('/reminder', requireTelegramAuth, async (req, res) => {
   try {
     const row = await setReminderEnabled(req.telegramUser.id, req.body?.enabled !== false);
@@ -121,7 +121,7 @@ router.post('/reminder', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/notify { digest?, partners? } — итоги недели и сообщения о совместных пробежках
+// POST /api/auth/notify { digest?, partners? } - итоги недели и сообщения о совместных пробежках
 router.post('/notify', requireTelegramAuth, async (req, res) => {
   try {
     const row = await setNotifyPrefs(req.telegramUser.id, { digest: req.body?.digest, partners: req.body?.partners });
@@ -133,11 +133,11 @@ router.post('/notify', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// Какие виды спорта можно выбрать (названия и значки — на стороне приложения)
+// Какие виды спорта можно выбрать (названия и значки - на стороне приложения)
 const SPORTS = ['athletics', 'running', 'football', 'basketball', 'volleyball', 'hockey', 'swimming',
   'cycling', 'triathlon', 'combat', 'tennis', 'fitness', 'other'];
 
-// POST /api/auth/sport { sport, discipline } — вид спорта и дисциплина в профиле ({ sport: null } — убрать)
+// POST /api/auth/sport { sport, discipline } - вид спорта и дисциплина в профиле ({ sport: null } - убрать)
 router.post('/sport', requireTelegramAuth, async (req, res) => {
   const sport = req.body.sport === null ? null : String(req.body.sport || '');
   if (sport !== null && !SPORTS.includes(sport)) return res.status(400).json({ error: 'Такого вида спорта нет' });
@@ -152,7 +152,7 @@ router.post('/sport', requireTelegramAuth, async (req, res) => {
 });
 
 // ===================================================================
-//  АНКЕТА СПОРТСМЕНА (личное — видит только сам человек и Fom, друзьям не показывается)
+//  АНКЕТА СПОРТСМЕНА (личное - видит только сам человек и Fom, друзьям не показывается)
 // ===================================================================
 const LEVELS = ['beginner', 'amateur', 'ranked', 'kms', 'ms'];
 
@@ -182,7 +182,7 @@ const athleteReady = (async () => {
   }
 })();
 
-// Проверка полей анкеты: пустое — можно, заполненное — только в разумных пределах.
+// Проверка полей анкеты: пустое - можно, заполненное - только в разумных пределах.
 // Если что-то не так, возвращаем понятное сообщение, а не тихо стираем значение.
 function numIn(v, min, max, label, decimals = 0) {
   if (v === '' || v === null || v === undefined) return null;
@@ -196,7 +196,7 @@ function textIn(v, max = 300) {
   return s ? s.slice(0, max) : null;
 }
 
-// GET /api/auth/athlete — своя анкета
+// GET /api/auth/athlete - своя анкета
 router.get('/athlete', requireTelegramAuth, async (req, res) => {
   try {
     await athleteReady;
@@ -212,7 +212,7 @@ router.get('/athlete', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/athlete — сохранить анкету
+// POST /api/auth/athlete - сохранить анкету
 router.post('/athlete', requireTelegramAuth, async (req, res) => {
   const b = req.body || {};
   const year = new Date().getFullYear();
@@ -300,7 +300,7 @@ async function internalId(telegramId) {
 }
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-// GET /api/auth/starts — будущие старты (и прошедшие за последнюю неделю)
+// GET /api/auth/starts - будущие старты (и прошедшие за последнюю неделю)
 router.get('/starts', requireTelegramAuth, async (req, res) => {
   try {
     await extrasReady;
@@ -316,7 +316,7 @@ router.get('/starts', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/starts { date, name, discipline, goal } — добавить старт в планы
+// POST /api/auth/starts { date, name, discipline, goal } - добавить старт в планы
 router.post('/starts', requireTelegramAuth, async (req, res) => {
   const b = req.body || {};
   const date = String(b.date || '');
@@ -429,7 +429,7 @@ async function currentWeight(uid) {
   return p.rows[0]?.weight_kg != null ? Number(p.rows[0].weight_kg) : null;
 }
 
-// GET /api/auth/goals — цели текущего месяца + вес за 90 дней
+// GET /api/auth/goals - цели текущего месяца + вес за 90 дней
 router.get('/goals', requireTelegramAuth, async (req, res) => {
   try {
     await socialReady;
@@ -463,7 +463,7 @@ router.post('/goals', requireTelegramAuth, async (req, res) => {
     const uid = await internalId(req.telegramUser.id);
     if (!uid) return res.status(404).json({ error: 'User not found' });
     const cnt = await query('SELECT count(*)::int AS n FROM goals WHERE user_id = $1 AND month = $2', [uid, mskMonth()]);
-    if (cnt.rows[0].n >= 6) return res.status(400).json({ error: 'На месяц — до 6 целей' });
+    if (cnt.rows[0].n >= 6) return res.status(400).json({ error: 'На месяц - до 6 целей' });
     let title = textIn(b.title, 80), discipline = null, target = null, targetNum = null, startNum = null;
     if (kind === 'volume') { targetNum = numSoft(b.target_num, 1, 2000); if (!targetNum) return res.status(400).json({ error: 'Сколько км за месяц?' }); }
     if (kind === 'count') { targetNum = numSoft(b.target_num, 1, 90); if (!targetNum) return res.status(400).json({ error: 'Сколько тренировок за месяц?' }); }
@@ -494,7 +494,7 @@ router.post('/goals', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/goals/:id/done { done } — отметить свою цель выполненной
+// POST /api/auth/goals/:id/done { done } - отметить свою цель выполненной
 router.post('/goals/:id/done', requireTelegramAuth, async (req, res) => {
   try {
     await socialReady;
@@ -518,7 +518,7 @@ router.delete('/goals/:id', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/weight { kg } — записать вес на сегодня (для цели по весу)
+// POST /api/auth/weight { kg } - записать вес на сегодня (для цели по весу)
 router.post('/weight', requireTelegramAuth, async (req, res) => {
   const kg = numSoft(req.body?.kg, 30, 250);
   if (!kg) return res.status(400).json({ error: 'Укажи вес в кг' });
@@ -534,7 +534,7 @@ router.post('/weight', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// GET /api/auth/morning — утренние отметки за 14 дней
+// GET /api/auth/morning - утренние отметки за 14 дней
 router.get('/morning', requireTelegramAuth, async (req, res) => {
   try {
     await extrasReady;
@@ -550,7 +550,7 @@ router.get('/morning', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/morning { date, sleep_h, rest_hr, mood } — отметка за сегодня (или вчера)
+// POST /api/auth/morning { date, sleep_h, rest_hr, mood } - отметка за сегодня (или вчера)
 router.post('/morning', requireTelegramAuth, async (req, res) => {
   const b = req.body || {};
   const today = getClientToday(req);
@@ -581,7 +581,7 @@ router.post('/morning', requireTelegramAuth, async (req, res) => {
 });
 
 // Стереть человека и всё, что с ним связано. Большинство таблиц удаляется каскадом само;
-// таблицы, созданные вручную в Supabase (друзья и т.п.), могли остаться без каскада — их чистим здесь,
+// таблицы, созданные вручную в Supabase (друзья и т.п.), могли остаться без каскада - их чистим здесь,
 // находя такие связи в самой базе, чтобы удаление не упало на «забытой» таблице.
 async function eraseUser(client, userId) {
   const refs = async (table) => (await client.query(
@@ -598,7 +598,7 @@ async function eraseUser(client, userId) {
   return client.query('DELETE FROM users WHERE id = $1 RETURNING id', [userId]);
 }
 
-// DELETE /api/auth/me { confirm: true } — стереть все мои данные (записи, анализы, друзья, чаты, пробежки, лимиты ИИ…)
+// DELETE /api/auth/me { confirm: true } - стереть все мои данные (записи, анализы, друзья, чаты, пробежки, лимиты ИИ…)
 router.delete('/me', requireTelegramAuth, async (req, res) => {
   if (req.body?.confirm !== true) return res.status(400).json({ error: 'Нужно подтверждение' });
   let client;
@@ -618,7 +618,7 @@ router.delete('/me', requireTelegramAuth, async (req, res) => {
   } catch (err) {
     if (client) await client.query('ROLLBACK').catch(() => {});
     console.error('Account delete failed:', err.message);
-    res.status(500).json({ error: 'Не получилось удалить данные — попробуй ещё раз' });
+    res.status(500).json({ error: 'Не получилось удалить данные - попробуй ещё раз' });
   } finally {
     client?.release();
   }
