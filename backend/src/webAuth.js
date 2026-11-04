@@ -8,7 +8,7 @@ import { query } from './db.js';
  * Как это работает:
  *  1. Приложение просит у сервера «код входа» и открывает бота по ссылке t.me/<бот>?start=wl_<код>.
  *  2. Бот присылает человеку сообщение «Войти в Forma на новом устройстве?» с кнопкой «Да, это я».
- *  3. Пока человек не нажал — приложение раз в пару секунд спрашивает сервер. После нажатия сервер
+ *  3. Пока человек не нажал - приложение раз в пару секунд спрашивает сервер. После нажатия сервер
  *     отдаёт приложению длинный личный ключ (сессию), и дальше запросы идут с ним, как с подписью Telegram.
  *
  * В базе лежат только отпечатки (sha256) кодов и ключей: утечка базы не даёт войти в чужой аккаунт.
@@ -105,7 +105,7 @@ export async function startLogin(ip) {
   return { code, link: `https://t.me/${BOT_USERNAME}?start=wl_${code}`, expires_in: LOGIN_TTL_MS / 1000 };
 }
 
-/** Бот: человек увидел запрос. true — код действительный. */
+/** Бот: человек увидел запрос. true - код действительный. */
 export async function loginPending(code) {
   if (!/^[a-f0-9]{24}$/.test(String(code))) return false;
   await webAuthReady;
@@ -168,7 +168,7 @@ const startHits = new Map(); // ip -> [времена]: не больше 15 н�
 router.post('/start', async (req, res) => {
   const now = Date.now();
   const list = (startHits.get(req.ip) || []).filter((t) => now - t < 3600_000);
-  if (list.length >= 15) return res.status(429).json({ error: 'Слишком много попыток входа — попробуй через час' });
+  if (list.length >= 15) return res.status(429).json({ error: 'Слишком много попыток входа - попробуй через час' });
   list.push(now);
   if (startHits.size > 20000) startHits.clear();
   startHits.set(req.ip, list);
