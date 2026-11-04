@@ -5,12 +5,12 @@ import { requireTelegramAuth } from '../telegramAuth.js';
 import { createSession } from '../webAuth.js';
 
 /**
- * Вход по почте и паролю — для тех, у кого Telegram не работает (например, в России без VPN).
+ * Вход по почте и паролю - для тех, у кого Telegram не работает (например, в России без VPN).
  *
  *  - register: новый человек создаёт аккаунт. Ему выдаётся собственный номер (в базе все аккаунты живут по «telegram_id»,
  *    поэтому для почтовых аккаунтов берём числа из отдельного диапазона, который не пересекается с настоящими id Telegram).
- *  - login: вход по почте и паролю на новом устройстве — выдаётся ключ сессии, как при входе через бота.
- *  - link: тот, кто уже пользуется Forma через Telegram, привязывает к своему аккаунту почту и пароль — и дальше может войти без Telegram.
+ *  - login: вход по почте и паролю на новом устройстве - выдаётся ключ сессии, как при входе через бота.
+ *  - link: тот, кто уже пользуется Forma через Telegram, привязывает к своему аккаунту почту и пароль - и дальше может войти без Telegram.
  *
  * Пароли хранятся только в виде scrypt-отпечатков с солью. Почта пока не подтверждается письмом (почтового сервиса нет),
  * а забытый пароль сбрасывается кодом, присланным на почту (/forgot и /reset, письма через Resend).
@@ -68,23 +68,23 @@ function readCreds(body) {
   const email = String(body?.email || '').trim().toLowerCase();
   const password = String(body?.password || '');
   if (!EMAIL_RE.test(email) || email.length > 254) return { error: 'Проверь адрес почты' };
-  if (password.length < 8) return { error: 'Пароль — не короче 8 символов' };
+  if (password.length < 8) return { error: 'Пароль - не короче 8 символов' };
   if (password.length > 100) return { error: 'Пароль слишком длинный' };
   return { email, password };
 }
 
 router.post('/register', async (req, res) => {
   await ready;
-  if (limited('reg:' + req.ip, 5, 3600_000)) return res.status(429).json({ error: 'Слишком много попыток — попробуй позже' });
+  if (limited('reg:' + req.ip, 5, 3600_000)) return res.status(429).json({ error: 'Слишком много попыток - попробуй позже' });
   const c = readCreds(req.body);
   if (c.error) return res.status(400).json({ error: c.error });
   const name = String(req.body?.name || '').trim().slice(0, 40) || c.email.split('@')[0].slice(0, 30);
   const exists = await query('SELECT 1 FROM email_accounts WHERE email = $1', [c.email]);
-  if (exists.rows.length) return res.status(409).json({ error: 'Этот адрес уже зарегистрирован — войди' });
+  if (exists.rows.length) return res.status(409).json({ error: 'Этот адрес уже зарегистрирован - войди' });
   const id = Number((await query("SELECT nextval('email_user_seq') AS id")).rows[0].id);
   try {
     await query('INSERT INTO email_accounts (email, pass_hash, telegram_id) VALUES ($1, $2, $3)', [c.email, hashPassword(c.password), id]);
-  } catch (e) { return res.status(409).json({ error: 'Этот адрес уже зарегистрирован — войди' }); }
+  } catch (e) { return res.status(409).json({ error: 'Этот адрес уже зарегистрирован - войди' }); }
   const session = await createSession(id, { id, first_name: name }, req.headers['user-agent']);
   res.json({ session });
 });
@@ -93,7 +93,7 @@ router.post('/login', async (req, res) => {
   await ready;
   const c = readCreds(req.body);
   if (c.error) return res.status(400).json({ error: c.error });
-  if (limited('ip:' + req.ip) || limited('em:' + c.email)) return res.status(429).json({ error: 'Слишком много попыток — попробуй через 15 минут' });
+  if (limited('ip:' + req.ip) || limited('em:' + c.email)) return res.status(429).json({ error: 'Слишком много попыток - попробуй через 15 минут' });
   const r = await query('SELECT pass_hash, telegram_id FROM email_accounts WHERE email = $1', [c.email]);
   const row = r.rows[0];
   const ok = checkPassword(c.password, row ? row.pass_hash : FAKE_HASH);
@@ -125,8 +125,8 @@ router.post('/forgot', async (req, res) => {
   await ready;
   const email = String(req.body?.email || '').trim().toLowerCase();
   if (!EMAIL_RE.test(email) || email.length > 254) return res.status(400).json({ error: 'Проверь адрес почты' });
-  if (!process.env.RESEND_API_KEY) return res.status(503).json({ error: 'Отправка писем пока не настроена. Напиши в поддержку — поможем вернуть доступ.' });
-  if (limited('fp-ip:' + req.ip, 8, 3600_000) || limited('fp:' + email, 3, 3600_000)) return res.status(429).json({ error: 'Слишком много запросов — попробуй через час' });
+  if (!process.env.RESEND_API_KEY) return res.status(503).json({ error: 'Отправка писем пока не настроена. Напиши в поддержку - поможем вернуть доступ.' });
+  if (limited('fp-ip:' + req.ip, 8, 3600_000) || limited('fp:' + email, 3, 3600_000)) return res.status(429).json({ error: 'Слишком много запросов - попробуй через час' });
   const acc = await query('SELECT 1 FROM email_accounts WHERE email = $1', [email]);
   if (acc.rows.length) {
     const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
@@ -135,7 +135,7 @@ router.post('/forgot', async (req, res) => {
        ON CONFLICT (email) DO UPDATE SET code_hash = $2, expires_at = now() + interval '15 minutes', attempts = 0`,
       [email, codeHash(email, code)]
     );
-    await sendMail(email, 'Код для входа в Forma', `Твой код: ${code}\n\nОн действует 15 минут. Если это был не ты — просто проигнорируй письмо, пароль не изменится.`).catch((e) => console.error('Mail error:', e.message));
+    await sendMail(email, 'Код для входа в Forma', `Твой код: ${code}\n\nОн действует 15 минут. Если это был не ты - просто проигнорируй письмо, пароль не изменится.`).catch((e) => console.error('Mail error:', e.message));
   }
   // одинаковый ответ, есть такая почта или нет
   res.json({ ok: true });
@@ -147,12 +147,12 @@ router.post('/reset', async (req, res) => {
   const code = String(req.body?.code || '').replace(/\D/g, '');
   const password = String(req.body?.password || '');
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Проверь адрес почты' });
-  if (password.length < 8) return res.status(400).json({ error: 'Пароль — не короче 8 символов' });
+  if (password.length < 8) return res.status(400).json({ error: 'Пароль - не короче 8 символов' });
   if (password.length > 100) return res.status(400).json({ error: 'Пароль слишком длинный' });
-  if (limited('rs-ip:' + req.ip, 20, 3600_000)) return res.status(429).json({ error: 'Слишком много попыток — попробуй позже' });
+  if (limited('rs-ip:' + req.ip, 20, 3600_000)) return res.status(429).json({ error: 'Слишком много попыток - попробуй позже' });
   const r = await query('SELECT code_hash, attempts, expires_at > now() AS fresh FROM email_resets WHERE email = $1', [email]);
   const row = r.rows[0];
-  if (!row || !row.fresh || row.attempts >= 5) return res.status(400).json({ error: 'Код не подходит или устарел — запроси новый' });
+  if (!row || !row.fresh || row.attempts >= 5) return res.status(400).json({ error: 'Код не подходит или устарел - запроси новый' });
   const good = code.length === 6 && crypto.timingSafeEqual(Buffer.from(row.code_hash), Buffer.from(codeHash(email, code)));
   if (!good) {
     await query('UPDATE email_resets SET attempts = attempts + 1 WHERE email = $1', [email]);
@@ -174,7 +174,7 @@ router.post('/link', requireTelegramAuth, async (req, res) => {
   await ready;
   const c = readCreds(req.body);
   if (c.error) return res.status(400).json({ error: c.error });
-  if (limited('link:' + req.telegramUser.id, 10, 3600_000)) return res.status(429).json({ error: 'Слишком много попыток — попробуй позже' });
+  if (limited('link:' + req.telegramUser.id, 10, 3600_000)) return res.status(429).json({ error: 'Слишком много попыток - попробуй позже' });
   const id = req.telegramUser.id;
   const taken = await query('SELECT telegram_id FROM email_accounts WHERE email = $1', [c.email]);
   if (taken.rows.length && Number(taken.rows[0].telegram_id) !== id) return res.status(409).json({ error: 'Эта почта уже привязана к другому аккаунту' });
