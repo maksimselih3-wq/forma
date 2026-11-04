@@ -14,7 +14,7 @@ export function daysBetween(a, b) {
   return Math.round(ms / (1000 * 60 * 60 * 24));
 }
 
-// Проверка, что строка — настоящая дата (отсекает '2026-02-30' и мусор)
+// Проверка, что строка - настоящая дата (отсекает '2026-02-30' и мусор)
 export function isValidDate(str) {
   if (typeof str !== 'string' || !DATE_RE.test(str)) return false;
   const d = new Date(str + 'T00:00:00Z');
@@ -30,9 +30,9 @@ function serverToday() {
  * чтобы у спортсмена из Москвы в 01:00 «сегодня» не считалось вчерашним днём (сервер живёт по UTC).
  *
  * Часовые пояса лежат в пределах UTC−12…UTC+14, поэтому дата у человека может отличаться от
- * серверной (UTC) не больше чем на ОДИН день. Всё, что дальше, — подделка заголовка:
+ * серверной (UTC) не больше чем на ОДИН день. Всё, что дальше, - подделка заголовка:
  * раньше допускалось ±2 дня, и можно было заранее заполнить завтра и послезавтра.
- * Если заголовка нет или дата странная — берём дату сервера.
+ * Если заголовка нет или дата странная - берём дату сервера.
  */
 export function getClientToday(req) {
   const d = req.headers['x-client-date'];
@@ -46,7 +46,7 @@ export function getClientToday(req) {
  * теперь, когда есть календарь, считаем честно с нуля:
  *  - лучшая серия = самый длинный отрезок дней подряд с записью (тренировка или отдых);
  *  - текущая серия = отрезок, который заканчивается сегодня или вчера
- *    (если вчера была запись, а сегодня ещё нет — серия пока жива).
+ *    (если вчера была запись, а сегодня ещё нет - серия пока жива).
  */
 export async function recalcStreak(userId, today = serverToday()) {
   const res = await query(
@@ -78,12 +78,12 @@ export async function recalcStreak(userId, today = serverToday()) {
 /**
  * Сколько дней назад можно создать НОВУЮ запись.
  * Новичок в первые 7 дней после регистрации заполняет дневник за прошлую неделю (7 дней назад),
- * потом — только сегодня и вчера (1 день назад). Уже сделанные записи можно править за любой день.
+ * потом - только сегодня и вчера (1 день назад). Уже сделанные записи можно править за любой день.
  * Числа меняются в Railway: BACKFILL_NEW_USER_DAYS (по умолчанию 7) и BACKFILL_DAYS (по умолчанию 1).
  */
 export function backfillDaysFor(user) {
   // Эти аккаунты (по нику в Telegram) могут заполнять календарь за любой день: переменная UNLIMITED_BACKFILL_USERS
-  // в Railway — ники через запятую, без @. По умолчанию — владелец приложения.
+  // в Railway - ники через запятую, без @. По умолчанию - владелец приложения.
   const vip = (process.env.UNLIMITED_BACKFILL_USERS || 'maksimshelikh').split(',').map((x) => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean);
   if (user?.username && vip.includes(String(user.username).toLowerCase())) return 3650;
   const newDays = Number(process.env.BACKFILL_NEW_USER_DAYS) || 7;
