@@ -4,8 +4,8 @@ import { requireTelegramAuth } from '../telegramAuth.js';
 /**
  * Место тренировки: поиск города/места и высоты над уровнем моря.
  *
- *  GET /api/geo/search?q=Кисловодск   — до 6 вариантов { name, region, lat, lon, elevation }
- *  GET /api/geo/reverse?lat=..&lon=.. — «где я сейчас»: название места и высота
+ *  GET /api/geo/search?q=Кисловодск   - до 6 вариантов { name, region, lat, lon, elevation }
+ *  GET /api/geo/reverse?lat=..&lon=.. - «где я сейчас»: название места и высота
  *
  * Данные: Open-Meteo (поиск и высота, без ключа) и OpenStreetMap Nominatim (название по координатам).
  * Ответы кэшируем в памяти, чтобы не дёргать сервисы по одному и тому же запросу.
@@ -51,7 +51,7 @@ router.get('/search', requireTelegramAuth, async (req, res) => {
     res.json({ places: remember(key, places) });
   } catch (err) {
     console.error('Geo search failed:', err.message);
-    res.status(502).json({ error: 'Поиск места сейчас недоступен — впиши высоту сам' });
+    res.status(502).json({ error: 'Поиск места сейчас недоступен - впиши высоту сам' });
   }
 });
 
@@ -60,7 +60,7 @@ router.get('/reverse', requireTelegramAuth, async (req, res) => {
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
     return res.status(400).json({ error: 'Нет координат' });
   }
-  const la = round(lat, 3), lo = round(lon, 3); // ~100 м — для кэша и приватности достаточно
+  const la = round(lat, 3), lo = round(lon, 3); // ~100 м - для кэша и приватности достаточно
   const key = `r:${la},${lo}`;
   if (cache.has(key)) return res.json({ place: cache.get(key) });
   const [elev, rev] = await Promise.allSettled([
