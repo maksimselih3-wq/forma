@@ -1,586 +1,1443 @@
-import express, { Router } from 'express';
-import crypto from 'crypto';
-import { query } from '../db.js';
-import { requireTelegramAuth } from '../telegramAuth.js';
-import { GIVEAWAYS, giveawayStatus, runDraw, startGiveawayScheduler, isAdmin, honestStreak, nextDrawAt } from '../giveaway.js';
-import { sendPush, plainPush } from '../push.js';
-import { startReminderScheduler, reminderText, sendWeeklyDigests } from '../reminders.js';
-import { startTestersScheduler, testerDayInfo, testerMail } from '../testers.js';
-import { rememberReferral } from '../social.js';
-import { loginPending, confirmLogin, denyLogin } from '../webAuth.js';
-import { adminDeleteRun } from './partners.js';
+import dotenv from 'dotenv';
+import { query } from './db.js';
+import { takeQuota, refundQuota } from './aiQuota.js';
+import { markAiDown, markAiUp } from './aiGuard.js';
+dotenv.config();
+
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const MODEL_INSIGHTS = process.env.MODEL_INSIGHTS || 'claude-sonnet-5'; // для разбора за период нужна модель посерьёзнее одной тренировки
+const MODEL = 'claude-haiku-4-5-20251001'; // дёшево и быстро - для мелких задач
+// Для «умных» ответов (чат, отзыв о тренировке, умный ввод) берём сильную модель. Вернуть дешёвую: FOM_FAST_MODE=1 в Railway.
+const MODEL_SMART = process.env.FOM_FAST_MODE === '1' ? MODEL : MODEL_INSIGHTS;
+
+// Какой ИИ отвечает: 'claude' (по умолчанию), 'gemini' или 'openai' (любой сервис с форматом OpenAI: OpenAI, DeepSeek, OpenRouter).
+// Переключается переменной AI_PROVIDER в Railway, код менять не нужно.
+const AI_PROVIDER = (process.env.AI_PROVIDER || 'claude').toLowerCase();
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const GEMINI_MODEL_INSIGHTS = process.env.GEMINI_MODEL_INSIGHTS || GEMINI_MODEL;
+const GEMINI_FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS || 'gemini-3.5-flash-lite,gemini-3.5-flash').split(',').map((m) => m.trim());
+
+// OpenAI-совместимый провайдер: OPENAI_API_KEY, OPENAI_BASE_URL (по умолчанию OpenAI), OPENAI_MODEL, OPENAI_MODEL_INSIGHTS, OPENAI_FALLBACK_MODELS
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+const OPENAI_MODEL_INSIGHTS = process.env.OPENAI_MODEL_INSIGHTS || OPENAI_MODEL;
+const OPENAI_FALLBACK_MODELS = (process.env.OPENAI_FALLBACK_MODELS || '').split(',').map((m) => m.trim()).filter(Boolean);
+const OPENAI_REASONING_EFFORT = process.env.OPENAI_REASONING_EFFORT || ''; // для рассуждающих моделей (gpt-5…): minimal/low/medium
+
+// Кто такой Fom - общее описание для всех запросов к ИИ
+const FOM_INTRO = `Тебя зовут Fom - ты помощник спортсмена-легкоатлета внутри тренировочного дневника. Если спросят, как тебя зовут, - отвечай, что ты Fom. Не подписывай сообщения и не представляйся без повода.
+
+Важно: ты НЕ тренер этого спортсмена. У него есть живой тренер, и план тренировок - за тренером. Поэтому:
+- не назначай тренировки и не говори, что делать завтра или на неделе (объём, интенсивность, отрезки);
+- не предлагай менять план и не спорь с ним;
+- твоя роль - считать, замечать и объяснять: объём, динамику, самочувствие, пульс, признаки усталости;
+- если видишь риск (перегруз, падение самочувствия, плохое восстановление) - скажи о нём прямо и посоветуй обсудить это с тренером;
+- советы по восстановлению вне тренировки (сон, питание, питьё, заминка, растяжка) - можно, коротко.
+
+Как ты думаешь и отвечаешь (важно, это делает тебя полезным):
+- Опирайся на данные спортсмена, а не на общие слова: называй конкретные даты, цифры, отрезки и сравнивай с его собственной нормой («на прошлой неделе было 5 тренировок, сейчас 3»).
+- Перед ответом молча проверь арифметику и даты. Итоги объёма бери готовыми из блока «ИТОГИ ОБЪЁМА», сам не пересчитывай.
+- Учитывай дисциплину спортсмена: что важно именно в его виде (скорость и техника у спринтера, объём и темп у стайера, попытки и техника у прыгуна и метателя, баланс видов у многоборца).
+- Находи неочевидное: тренд, связь «нагрузка → самочувствие → пульс», резкий скачок, недовосстановление; но не придумывай то, чего нет в данных.
+- Если данных мало или они противоречат друг другу - так и скажи и назови, чего не хватает. Лучше честное «не знаю», чем уверенная выдумка.
+- Отвечай по существу: сначала главный вывод, потом короткие доводы. Без воды и повторов вопроса.
+
+Пиши грамотным, живым русским языком, как говорит человек. Перечитывай фразу перед ответом: никаких корявых оборотов и калек (не «помоги с ними врачу», а «покажи их врачу»; не «сделал тренировок», а «провёл тренировок»). Не используй длинное тире (—): вместо него пиши обычный дефис (-) или перестрой фразу.`;
+
+// Как считать объём - спортсмены часто пишут кросс в разминку или заминку, а не в повторы
+const VOLUME_RULE = `Отрезки «по времени» (фартлек, вставки) - это работа по минутам: «1'» = минута, «30"» = секунды; если указан темп, примерная дистанция отрезка уже посчитана. Если вставки сделаны внутри кросса, они уже входят в его километры - не прибавляй их второй раз.
+Объём (километры, минуты, отрезки) считай по ВСЕМУ, что записано в тренировке: разминка, основная работа, заминка и заметки. Спортсмены часто пишут кросс или длительный бег (например «12 км, 55 мин») в разминку или заминку - это тоже часть объёма, учитывай его. Если цифры взяты из текста, а не из таблицы повторов, коротко скажи об этом. Не выдумывай то, чего в записях нет.
+Силовую работу и ОФП (упражнения с подходами, повторами и весом) учитывай отдельно от бегового объёма: это тоже нагрузка, особенно тяжёлые приседания, прыжки и плиометрика.`;
+
+// Время тренировки: когда была и сколько прошло с прошлой
+const TIME_RULE = `Если у тренировки указано время («время 18:00–19:30») - учитывай его: сколько часов прошло с конца прошлой тренировки (готовые цифры даны ниже, не пересчитывай) и в какое время суток спортсмену тренировки заходят лучше (по самочувствию и RPE). Отдых меньше ~12 часов после тяжёлой работы - повод отметить, что восстановиться могло не хватить; после лёгкой - это нормально. Если времени нет - не упоминай его и ничего не выдумывай.`;
+
+// Как читать пульс
+const ALT_RULE = `Если у тренировки указано место и высота («место: … высота ≈ 1240 м», «СБОР») - учитывай высоту. Примерно с 1000–1200 м и выше в первые 3–7 дней обычно выше пульс (и в покое, и на работе), тяжелее RPE и медленнее темп при той же нагрузке, хуже сон - это адаптация к высоте, а не спад формы; сравнивай такие тренировки между собой, а не с равниной. После возвращения со среднегорья отметь, как изменились результаты, но без обещаний. Дни на высоте уже посчитаны программой (ниже), не пересчитывай. Если места нет - не упоминай его и ничего не выдумывай.`;
+
+export const SUPP_RULE = `БАДы, витамины, добавки: можешь рассказать общими словами, о чём спортсмену стоит подумать и почему (например, при плохом сне часто обсуждают магний; зимой - витамин D, лучше по анализу; при низком ферритине в анализах - железо, но только по назначению врача; белок - если не добирает с едой). Обязательно в каждом таком ответе:
+1) решение о любой добавке и дозировке - только вместе с врачом или тренером;
+2) каждый конкретный препарат нужно самому проверить в официальном сервисе РУСАДА list.rusada.ru - ты не можешь гарантировать, что он разрешён;
+3) у БАДов есть риск загрязнения запрещёнными веществами - безопаснее продукты с независимой проверкой партий на допинг; ответственность за то, что попало в организм, лежит на спортсмене.
+Формулируй как варианты для разговора с врачом («можно обсудить с врачом магний»), а не как назначение («тебе нужны антиоксиданты»). Если в данных нет анализов крови, а они помогли бы ответить, - подскажи, что их можно загрузить в приложении: «Профиль → Здоровье → Анализы» (фото или PDF бланка), и тогда Fom их учтёт.
+Никогда не называй конкретный бренд или препарат «точно разрешённым», не советуй рецептурные лекарства, гормоны и ничего из запрещённого списка ВАДА, не помогай «обойти» допинг-контроль.`;
+
+const HEALTH_RULE = `Анализы и здоровье: ты не врач и не ставишь диагнозов. Можешь объяснить простыми словами, что обычно означает показатель, и связать его с нагрузкой (например, КФК после тяжёлых тренировок часто повышена; у бегунов на выносливость нередко снижен ферритин; после высоты меняется гемоглобин). Если показатель вне нормы лаборатории - спокойно скажи, что это стоит обсудить с врачом (спортивным врачом), без запугивания и без назначения лекарств.`;
+
+const PULSE_RULE = `Если указан пульс: «средний» и «максимальный» - за тренировку, «минимальный» - насколько низко пульс опускался в паузах отдыха между отрезками/подходами. Чем ниже пульс успевает опуститься в паузах, тем лучше восстановление. Сравнивай с прошлыми тренировками похожей работы: если в паузах пульс стал опускаться хуже (минимальный выше обычного) или максимальный выше при той же работе - это признак накопленной усталости. Если пульса нет - не упоминай его. Не ставь медицинских диагнозов.`;
+
+// Темп бега: только для средних и длинных дистанций
+const PACE_RULE = `Темп: для средних и длинных отрезков и непрерывного бега (от ~600 м, кроссы, темповые, длительные) оценивай работу в темпе мин/км. Например, 10 км за 50 мин - это 5:00/км. Где в записи стоит «темп ≈ …/км», он уже посчитан - бери его, не пересчитывай. Сравнивай темп с прошлыми похожими тренировками и с пульсом (быстрее при том же пульсе - хороший знак). Для спринта (короткие отрезки до ~400 м), прыжков, метаний и ОФП темп на километр не считай - там важны время отрезка и качество.`;
+
+// Старты (соревнования)
+const COMP_RULE = `Если запись помечена как СТАРТ (соревнование) - это не обычная тренировка. Оцени результат: сравни с прошлыми стартами в этой дисциплине и с лучшими результатами спортсмена (если они есть ниже). Если это личный рекорд - обязательно отметь и порадуйся вместе с ним. Если результат хуже - без критики, коротко отметь, что могло повлиять (самочувствие, пульс, нагрузка в предыдущие дни), и не делай выводов за тренера.`;
+
+// ---------- Результаты стартов ----------
+// Прыжки и метания - «больше = лучше» (метры), бег и ходьба - «меньше = лучше» (время)
+const FIELD_EVENT_RE = /прыж|длин|тройн|высот|шест|ядр|диск|копь|молот|метан|толк/i;
+export function higherIsBetter(discipline) {
+  return FIELD_EVENT_RE.test(discipline || '');
+}
+// «10.95» → 10.95 с, «1:58.4» → 118.4 с, «15:20,3» → 920.3 с, «7,12 м» → 7.12 м
+export function parseResult(result, discipline) {
+  const t = String(result || '').replace(/,/g, '.').trim();
+  const token = t.match(/\d[\d:.]*/)?.[0];
+  if (!token) return null;
+  if (higherIsBetter(discipline)) {
+    const n = parseFloat(token);
+    return Number.isFinite(n) ? n : null;
+  }
+  const parts = token.split(':').map(Number);
+  if (parts.some((x) => !Number.isFinite(x))) return null;
+  return parts.reduce((acc, x) => acc * 60 + x, 0);
+}
+// Ключ дисциплины для группировки: «100 м», «100м», «100 метров» - одно и то же
+export function disciplineKey(d) {
+  return String(d || '').toLowerCase().replace(/метр(ов|а)?/g, 'м').replace(/\s+/g, '').replace(/ё/g, 'е');
+}
+// Лучший результат в каждой дисциплине по списку записей
+export function bestResults(workouts) {
+  const best = {};
+  for (const w of workouts) {
+    const c = w.competition;
+    if (!c?.discipline || !c?.result) continue;
+    const v = parseResult(c.result, c.discipline);
+    if (v == null) continue;
+    const key = disciplineKey(c.discipline);
+    const cur = best[key];
+    const better = !cur || (higherIsBetter(c.discipline) ? v > cur.value : v < cur.value);
+    if (better) best[key] = { value: v, discipline: c.discipline, result: c.result, date: String(w.date).slice(0, 10), name: c.name, id: w.id };
+  }
+  return Object.values(best);
+}
+
+// Как пользоваться данными о спортсмене (пол, возраст, рост, вес и т.д.)
+const ATHLETE_RULE = `Если ниже есть данные о спортсмене - учитывай их, чтобы оценки были точнее: возраст и пол (нормы пульса и восстановления), вес (нагрузка на суставы в прыжках и беге), стаж и уровень (какой объём для него привычен), дисциплину, личные рекорды и цель, травмы и ограничения (будь внимателен к нагрузке на эти места). Не комментируй внешность и вес тела, не советуй худеть или набирать вес и не давай диет, если спортсмен сам об этом не спросит. Если данных нет - просто не упоминай их.`;
+
+const SPORTS_RU = {
+  athletics: 'лёгкая атлетика', running: 'бег', football: 'футбол', basketball: 'баскетбол', volleyball: 'волейбол',
+  hockey: 'хоккей', swimming: 'плавание', cycling: 'велоспорт', triathlon: 'триатлон', combat: 'единоборства',
+  tennis: 'теннис', fitness: 'фитнес', other: 'другое',
+};
+const LEVELS_RU = { beginner: 'новичок', amateur: 'любитель', ranked: 'разрядник', kms: 'КМС', ms: 'МС и выше' };
+
+// ---------- Цели на месяц: прогресс для Fom ----------
+export async function goalsFacts(userId) {
+  const month = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 7);
+  const g = await query(`SELECT * FROM goals WHERE user_id = $1 AND month = $2 ORDER BY id`, [userId, month]);
+  if (!g.rows.length) return '';
+  const need = g.rows.some((x) => ['volume', 'count'].includes(x.kind));
+  const ws = need
+    ? (await query(`SELECT w.type, w.warmup, w.cooldown, w.competition,
+          COALESCE((SELECT json_agg(s.*) FROM workout_sets s WHERE s.workout_id = w.id), '[]') AS sets
+        FROM workouts w WHERE w.user_id = $1 AND to_char(w.date, 'YYYY-MM') = $2 AND COALESCE(w.source, '') <> 'strava'`, [userId, month])).rows
+    : [];
+  const km = Math.round(ws.reduce((a, w) => a + volumeKm(w), 0) * 10) / 10;
+  const cnt = ws.filter((w) => w.type === 'training').length;
+  let weightNow = null;
+  if (g.rows.some((x) => x.kind === 'weight')) {
+    const w = await query(`SELECT kg FROM weight_log WHERE user_id = $1 ORDER BY date DESC LIMIT 1`, [userId]);
+    weightNow = w.rows[0] ? Number(w.rows[0].kg) : null;
+  }
+  let best = [];
+  if (g.rows.some((x) => x.kind === 'pb')) {
+    const comps = await query(`SELECT id, date, competition FROM workouts WHERE user_id = $1 AND competition IS NOT NULL`, [userId]);
+    let manual = [];
+    try {
+      const m = await query(`SELECT id, discipline, result FROM manual_records WHERE user_id = $1`, [userId]);
+      manual = m.rows.map((x) => ({ id: `m${x.id}`, date: '1900-01-01', competition: { discipline: x.discipline, result: x.result } }));
+    } catch (e) { /* нет таблицы */ }
+    best = bestResults([...comps.rows, ...manual]);
+  }
+  const f = (n) => String(n).replace('.', ',');
+  const items = g.rows.map((x) => {
+    if (x.kind === 'volume') return `набегать ${f(Number(x.target_num))} км за месяц - сейчас ${f(km)} км`;
+    if (x.kind === 'count') return `${Number(x.target_num)} тренировок за месяц - сейчас ${cnt}`;
+    if (x.kind === 'pb') {
+      const b = best.find((r) => disciplineKey(r.discipline) === disciplineKey(x.discipline));
+      return `личный рекорд ${x.discipline}: цель ${x.target}${b ? `, сейчас лучший ${b.result}` : ', рекорда пока нет'}`;
+    }
+    if (x.kind === 'weight') {
+      const dir = x.start_num != null && Number(x.target_num) < Number(x.start_num) ? 'похудеть' : 'набрать вес (мышечную массу)';
+      return `${dir} до ${f(Number(x.target_num))} кг${x.start_num != null ? ` (в начале месяца ${f(Number(x.start_num))} кг)` : ''}${weightNow != null ? `, сейчас ${f(weightNow)} кг` : ''}`;
+    }
+    return `${x.title}${x.done ? ' - отмечена выполненной' : ''}`;
+  });
+  return `Цели на этот месяц (${month}), прогресс посчитан программой: ${items.join('; ')}. Когда уместно - связывай тренировки с этими целями: помогают ли они к ним идти. Питание и вес обсуждай бережно, без жёстких диет.`;
+}
+
+// ---------- Здоровье: что Fom знает об анализах, БАДах и питании ----------
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
+}
+export function markerStatus(m) {
+  const v = Number(m.value), lo = m.ref_low == null ? null : Number(m.ref_low), hi = m.ref_high == null ? null : Number(m.ref_high);
+  if (!Number.isFinite(v)) return null;
+  if (lo != null && Number.isFinite(lo) && v < lo) return 'low';
+  if (hi != null && Number.isFinite(hi) && v > hi) return 'high';
+  return lo != null || hi != null ? 'ok' : null;
+}
+export function markerLine(m) {
+  const st = markerStatus(m);
+  const ref = m.ref_low != null || m.ref_high != null ? ` (норма лаборатории ${m.ref_low ?? '…'}–${m.ref_high ?? '…'})` : '';
+  return `${m.name} ${String(m.value).replace('.', ',')}${m.unit ? ' ' + m.unit : ''}${ref}${st === 'low' ? ' - НИЖЕ нормы' : st === 'high' ? ' - ВЫШЕ нормы' : ''}`;
+}
+export async function healthFacts(userId) {
+  const out = [];
+  try {
+    const b = await query(`SELECT to_char(date, 'YYYY-MM-DD') AS date, markers FROM blood_tests
+      WHERE user_id = $1 AND date >= CURRENT_DATE - 180 ORDER BY date DESC LIMIT 1`, [userId]);
+    const t = b.rows[0];
+    if (t) {
+      const ms = Array.isArray(t.markers) ? t.markers : [];
+      const off = ms.filter((m) => ['low', 'high'].includes(markerStatus(m)));
+      out.push(`Последний анализ крови ${t.date}: ${ms.length} ${plural(ms.length, 'показатель', 'показателя', 'показателей')}${off.length ? `; вне нормы лаборатории: ${off.map(markerLine).join('; ')}` : ', все в норме лаборатории (или норма не указана)'}.`);
+    }
+  } catch (e) { /* нет таблицы */ }
+  try {
+    const s = await query(`SELECT name, dose FROM supplements WHERE user_id = $1 AND active ORDER BY id`, [userId]);
+    if (s.rows.length) out.push(`Принимает (со слов спортсмена): ${s.rows.map((x) => x.name + (x.dose ? ` - ${x.dose}` : '')).join('; ')}.`);
+  } catch (e) { /* нет таблицы */ }
+  try {
+    const m = await query(`SELECT to_char(date, 'YYYY-MM-DD') AS date, count(*)::int AS n, sum(kcal)::int AS kcal, round(sum(protein))::int AS protein, round(sum(carbs))::int AS carbs
+      FROM meals WHERE user_id = $1 AND date >= CURRENT_DATE - 3 GROUP BY date ORDER BY date DESC`, [userId]);
+    if (m.rows.length) out.push(`Питание по фото/записям (оценка, неполная - не всё сфотографировано): ${m.rows.map((x) => `${x.date}: ${x.n} ${plural(x.n, 'приём', 'приёма', 'приёмов')} пищи, ≈${x.kcal} ккал, белок ≈${x.protein} г, углеводы ≈${x.carbs} г`).join('; ')}.`);
+  } catch (e) { /* нет таблицы */ }
+  return out.join('\n');
+}
+
+// Картинка для Claude: data:image/jpeg;base64,... → блок image
+function imageBlock(dataUrl) {
+  const m = /^data:(image\/(?:jpeg|png|webp)|application\/pdf);base64,(.+)$/.exec(String(dataUrl || ''));
+  if (!m) throw new Error('bad image');
+  // PDF (бланк из лаборатории) Claude читает как документ
+  if (m[1] === 'application/pdf') return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: m[2] } };
+  return { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } };
+}
+function jsonFrom(raw) {
+  const match = raw && raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Fom вернул не JSON');
+  return JSON.parse(match[0]);
+}
+
+/** Бланк анализа крови (фото или PDF) → { date, lab, markers: [{ name, value, unit, ref_low, ref_high }] } */
+export async function scanBloodImage(dataUrl) {
+  const system = `Ты читаешь бланк анализа крови из лаборатории (фото, скриншот или PDF). Верни ТОЛЬКО JSON без пояснений:
+{"date": "ГГГГ-ММ-ДД" или null, "lab": строка или null, "markers": [{"name": строка, "value": число, "unit": строка или null, "ref_low": число или null, "ref_high": число или null}]}
+Правила: название показателя - по-русски, коротко, как на бланке («Гемоглобин», «Ферритин», «Витамин D (25-OH)»). value - только число (запятую замени точкой). Референсные значения бери с бланка: «120–160» → ref_low 120, ref_high 160; «< 5» → ref_low null, ref_high 5; «> 30» → ref_low 30, ref_high null. Дата - дата взятия материала. Ничего не выдумывай: чего не видно - null; нечитаемые строки пропускай. Если это не анализ - {"markers": []}.`;
+  const raw = await callClaude({ model: MODEL_INSIGHTS, maxTokens: 2500, system, messages: [{ role: 'user', content: [imageBlock(dataUrl), { type: 'text', text: 'Разбери этот бланк.' }] }] });
+  return jsonFrom(raw);
+}
+
+/** Еда (фото и/или описание) → оценка КБЖУ */
+export async function scanFood({ image, text }) {
+  const system = `Ты помогаешь спортсмену примерно оценить приём пищи по фото и/или описанию. Верни ТОЛЬКО JSON без пояснений:
+{"title": короткое название по-русски, "items": [{"name": строка, "grams": число или null, "kcal": число, "protein": число, "fat": число, "carbs": число}], "kcal": число, "protein": число, "fat": число, "carbs": число, "confidence": "low"|"medium"|"high", "note": строка или null}
+Правила: оценивай порцию по фото (тарелка, упаковка, рука), граммы белка/жиров/углеводов - целые числа, итог - сумма по items. Если подпись уточняет продукт или вес - верь подписи. Если на фото не еда - {"items": [], "kcal": 0, "protein": 0, "fat": 0, "carbs": 0, "title": "Не похоже на еду", "confidence": "low"}. note - одно короткое замечание, если оценка очень неточная (например, «соус не виден»), иначе null. Без оценок «хорошо/плохо».`;
+  const content = [];
+  if (image) content.push(imageBlock(image));
+  content.push({ type: 'text', text: text ? `Подпись спортсмена: ${String(text).slice(0, 300)}` : 'Оцени этот приём пищи.' });
+  const raw = await callClaude({ model: MODEL, maxTokens: 900, system, messages: [{ role: 'user', content }] });
+  return jsonFrom(raw);
+}
 
 /**
- * Telegram-бот Forma:
- *  - при запуске сервера сам настраивает бота: имя, описание, команды, кнопку «Forma» у поля ввода;
- *  - принимает сообщения (webhook) и отвечает на /start красивым приветствием с кнопкой «Открыть Forma».
- *
- * Нужные переменные в Railway: BOT_TOKEN (уже есть) и BOT_WEBHOOK_SECRET (любая длинная случайная строка).
+ * Короткая справка о спортсмене для Fom: пол, возраст, рост, вес, пульс покоя, стаж, уровень,
+ * вид спорта, рекорды, цель, травмы. Эти данные видит только сам спортсмен и Fom.
  */
-const router = Router();
+// «1 год», «3 года», «21 год», «15 лет»
+function yearsRu(n) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  const w = a > 10 && a < 20 ? 'лет' : b === 1 ? 'год' : b >= 2 && b <= 4 ? 'года' : 'лет';
+  return `${n} ${w}`;
+}
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
-// Telegram принимает в секрете только латиницу, цифры, _ и -. Чтобы не зависеть от того,
-// что именно вписано в Railway (пробелы, переносы, другие символы), превращаем значение
-// в надёжный «отпечаток» из букв и цифр - его и отдаём Telegram, и с ним же сверяем.
-const RAW_SECRET = (process.env.BOT_WEBHOOK_SECRET || '').trim();
-const WEBHOOK_SECRET = RAW_SECRET ? crypto.createHash('sha256').update(RAW_SECRET).digest('hex') : '';
-const APP_URL = process.env.APP_URL || 'https://maksimselih3-wq.github.io/forma-2/';
-const SERVER_URL = process.env.SERVER_URL || 'https://forma-production-9c7a.up.railway.app';
-// Адрес для ссылок, которые открывает человек (картинка для истории, файл выгрузки).
-// Если приложение работает через свой домен в России - ссылки ведут туда, иначе на Railway.
-const PUBLIC_URL = (process.env.PUBLIC_URL || SERVER_URL).replace(/\/+$/, '');
-// Картинка приветствия лежит рядом с приложением на GitHub Pages
-const WELCOME_IMAGE = new URL('bot/welcome.png', APP_URL).toString();
-
-const OPEN_BUTTON = { inline_keyboard: [[{ text: '🚀 Открыть Forma', web_app: { url: APP_URL } }]] };
-
-async function tg(method, body) {
-  if (!BOT_TOKEN) return null;
+/**
+ * Сводка о спортсмене для Fom. forCoach = true - когда Fom пишет тренеру, а не самому спортсмену:
+ * тогда НЕ передаём то, что в приложении обещано как «видит только ты и Fom» —
+ * анализы крови, БАДы, питание, травмы, вес и цели по весу. Иначе Fom мог пересказать их тренеру.
+ */
+export async function athleteContext(userId, { forCoach = false } = {}) {
   try {
-    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15000),
-    });
-    const data = await res.json();
-    if (!data.ok) console.error(`Telegram ${method} failed:`, data.description);
-    return data;
-  } catch (err) {
-    console.error(`Telegram ${method} error:`, err.message);
-    return null;
-  }
-}
-
-// ---------- Оформление бота: выполняется при каждом запуске сервера (повторно - безопасно) ----------
-async function configureBot() {
-  if (!BOT_TOKEN) return;
-
-  // Имя меняем, только если оно другое: Telegram разрешает менять имя редко
-  // (иначе в логах «Too Many Requests» при каждом перезапуске)
-  const name = await tg('getMyName', {});
-  if (name?.ok && name.result?.name !== 'Forma') await tg('setMyName', { name: 'Forma' });
-
-  // Текст в пустом чате до нажатия «Старт» (до 512 символов)
-  await tg('setMyDescription', {
-    description:
-      'Forma - дневник тренировок с помощником Fom.\n\n' +
-      '📝 Записывай тренировку за минуту - можно просто своими словами\n' +
-      '❤️ Пульс, нагрузка, самочувствие, силовая и ОФП\n' +
-      '🤖 Fom считает объём и замечает перегруз\n' +
-      '🔥 Серии, календарь, друзья и реакции\n\n' +
-      'Жми «Старт» 👇',
-  });
-
-  // Короткое описание в профиле бота (до 120 символов)
-  await tg('setMyShortDescription', {
-    short_description: 'Дневник тренировок с помощником Fom 🔥 Серии, календарь, друзья.',
-  });
-
-  // Команды в меню «/»
-  await tg('setMyCommands', {
-    commands: [
-      { command: 'start', description: 'Открыть Forma' },
-      { command: 'giveaway', description: 'Розыгрыши подарков 🎁' },
-      { command: 'help', description: 'Что умеет Forma' },
-    ],
-  });
-
-  // Кнопка слева от поля ввода - сразу открывает приложение
-  await tg('setChatMenuButton', {
-    menu_button: { type: 'web_app', text: 'Forma', web_app: { url: APP_URL } },
-  });
-
-  // Подписываемся на сообщения боту
-  if (WEBHOOK_SECRET) {
-    const hook = await tg('setWebhook', {
-      url: `${SERVER_URL}/api/bot/webhook`,
-      secret_token: WEBHOOK_SECRET,
-      allowed_updates: ['message', 'callback_query'],
-      drop_pending_updates: true,
-    });
-    if (hook?.ok) console.log('Webhook OK - бот отвечает на /start');
-  } else {
-    console.log('BOT_WEBHOOK_SECRET не задан - бот не будет отвечать на /start');
-  }
-  console.log('Bot configured');
-}
-setTimeout(configureBot, 3000);
-
-// Розыгрыши: сервер сам подводит итоги по расписанию и пишет победителям
-const sendText = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, reply_markup: OPEN_BUTTON });
-startGiveawayScheduler(sendText);
-
-// Вечернее напоминание: в 21:00 (МСК), если за сегодня ещё нет записи
-// Сначала push в приложение; если у человека его нет или доставка не вышла - обычное сообщение бота
-const sendTgHtml = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
-
-// Одно «живое» сообщение каждого вида: новое заменяет старое (старое удаляем, если Telegram позволяет - до 48 часов)
-const botMsgsReady = query(`CREATE TABLE IF NOT EXISTS bot_msgs (
-  telegram_id BIGINT NOT NULL, kind TEXT NOT NULL, message_id BIGINT NOT NULL, at TIMESTAMPTZ DEFAULT now(),
-  PRIMARY KEY (telegram_id, kind))`).catch(() => 0);
-async function sendReplacing(chatId, kind, payload) {
-  await botMsgsReady;
-  try {
-    const old = await query('SELECT message_id FROM bot_msgs WHERE telegram_id = $1 AND kind = $2', [chatId, kind]);
-    if (old.rows[0]) await tg('deleteMessage', { chat_id: chatId, message_id: Number(old.rows[0].message_id) });
-  } catch (e) { /* не вышло удалить - не страшно */ }
-  const res = await tg('sendMessage', { chat_id: chatId, ...payload });
-  const mid = res?.result?.message_id;
-  if (res?.ok && mid) {
-    await query(`INSERT INTO bot_msgs (telegram_id, kind, message_id) VALUES ($1, $2, $3)
-      ON CONFLICT (telegram_id, kind) DO UPDATE SET message_id = EXCLUDED.message_id, at = now()`, [chatId, kind, mid]).catch(() => 0);
-  }
-  return res;
-}
-const sendHtml = async (chatId, text, kind) => {
-  try {
-    if (await sendPush(chatId, plainPush(text)) > 0) {
-      // push дошёл - старое напоминание в чате больше не нужно
-      if (kind) { try { await botMsgsReady; const o = await query('SELECT message_id FROM bot_msgs WHERE telegram_id=$1 AND kind=$2', [chatId, kind]); if (o.rows[0]) { await tg('deleteMessage', { chat_id: chatId, message_id: Number(o.rows[0].message_id) }); await query('DELETE FROM bot_msgs WHERE telegram_id=$1 AND kind=$2', [chatId, kind]); } } catch (e) {} }
-      return { ok: true };
-    }
-  } catch (e) { /* уйдёт в Telegram */ }
-  const payload = { text, parse_mode: 'HTML', reply_markup: OPEN_BUTTON };
-  return kind ? sendReplacing(chatId, kind, payload) : sendTgHtml(chatId, text);
-};
-startReminderScheduler(sendHtml);
-startTestersScheduler();
-
-function mskDateLabel(d) {
-  return new Date(d).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
-}
-
-// ---------- Статистика для админа: /stats и отчёт по понедельникам ----------
-async function safeQ(sql, params = []) {
-  try { return (await query(sql, params)).rows[0] || {}; } catch (e) { return {}; }
-}
-function pct(a, b) { return b ? `${Math.round((a / b) * 100)}%` : '—'; }
-
-export async function buildStats() {
-  // «сегодня» по Москве
-  const today = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
-  const u = await safeQ(
-    `SELECT count(*)::int AS total,
-       count(*) FILTER (WHERE created_at >= $1::date - 6)::int AS new7,
-       count(*) FILTER (WHERE created_at >= $1::date)::int AS new_today
-     FROM users`, [today]);
-  const a = await safeQ(
-    `SELECT count(DISTINCT user_id) FILTER (WHERE date = $1::date)::int AS dau,
-       count(DISTINCT user_id) FILTER (WHERE date >= $1::date - 6)::int AS wau,
-       count(DISTINCT user_id) FILTER (WHERE date >= $1::date - 29)::int AS mau,
-       count(*) FILTER (WHERE date >= $1::date - 6)::int AS entries7,
-       count(*) FILTER (WHERE date >= $1::date - 6 AND type = 'training')::int AS trainings7,
-       count(*) FILTER (WHERE date >= $1::date - 6 AND competition IS NOT NULL)::int AS comps7,
-       count(*)::int AS entries_total
-     FROM workouts`, [today]);
-  // Удержание: кто пришёл 7–13 дней назад - сколько из них записывали что-то за последние 7 дней
-  const r1 = await safeQ(
-    `SELECT count(*)::int AS cohort,
-       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = u.id AND w.date >= $1::date - 6))::int AS back
-     FROM users u WHERE u.created_at >= $1::date - 13 AND u.created_at < $1::date - 6`, [today]);
-  // Кто с нами 2+ недели - сколько активны на этой неделе
-  const r2 = await safeQ(
-    `SELECT count(*)::int AS cohort,
-       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = u.id AND w.date >= $1::date - 6))::int AS back
-     FROM users u WHERE u.created_at < $1::date - 13`, [today]);
-  // Зарегистрировались, но ни разу ничего не записали
-  const zero = await safeQ(
-    `SELECT count(*)::int AS n FROM users u WHERE NOT EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = u.id)`);
-  const fom = await safeQ(
-    `SELECT COALESCE(sum(count) FILTER (WHERE day = $1::date), 0)::int AS today,
-       COALESCE(sum(count) FILTER (WHERE day >= $1::date - 6), 0)::int AS week,
-       count(*) FILTER (WHERE day >= $1::date - 6 AND count >= 7)::int AS hit_limit
-     FROM chat_usage`, [today]);
-  const fb = await safeQ(`SELECT count(*)::int AS n FROM workouts WHERE ai_feedback IS NOT NULL AND date >= $1::date - 6`, [today]);
-  const g = await safeQ(`SELECT count(*)::int AS groups, count(*) FILTER (WHERE coach_mode)::int AS coach FROM groups`);
-  const gm = await safeQ(`SELECT count(DISTINCT user_id)::int AS n FROM group_members`);
-  const ref = await safeQ(`SELECT count(*) FILTER (WHERE invitee_id IS NOT NULL)::int AS n FROM referrals`);
-  const rem = await safeQ(`SELECT count(*) FILTER (WHERE COALESCE(remind_enabled, TRUE))::int AS on FROM users`);
-  let top = [];
-  try {
-    top = (await query(
-      `SELECT first_name, last_name, username, current_streak FROM users
-       WHERE current_streak > 0 ORDER BY current_streak DESC LIMIT 5`)).rows;
-  } catch (e) {}
-
-  const name = (x) => escapeHtml([x.first_name, x.last_name].filter(Boolean).join(' ') || (x.username ? '@' + x.username : '—'));
-  const lines = [
-    `📊 <b>Статистика Forma</b> · ${today}`,
-    '',
-    `👥 <b>Пользователи:</b> ${u.total ?? 0} (новых за неделю: ${u.new7 ?? 0}, сегодня: ${u.new_today ?? 0})`,
-    `😴 Ни разу ничего не записали: ${zero.n ?? 0}`,
-    '',
-    `📝 <b>Активность</b> (хоть одна запись):`,
-    `• сегодня: ${a.dau ?? 0} · за 7 дней: ${a.wau ?? 0} · за 30 дней: ${a.mau ?? 0}`,
-    `• записей за неделю: ${a.entries7 ?? 0} (тренировок ${a.trainings7 ?? 0}, стартов ${a.comps7 ?? 0}) · всего: ${a.entries_total ?? 0}`,
-    '',
-    `🔁 <b>Возвращаются:</b>`,
-    `• пришли 1–2 недели назад: ${r1.back ?? 0} из ${r1.cohort ?? 0} активны на этой неделе (${pct(r1.back, r1.cohort)})`,
-    `• с нами 2+ недели: ${r2.back ?? 0} из ${r2.cohort ?? 0} активны (${pct(r2.back, r2.cohort)})`,
-    '',
-    `🤖 <b>Fom:</b> сообщений в чат сегодня ${fom.today ?? 0}, за неделю ${fom.week ?? 0}` +
-      (fom.hit_limit ? ` · упирались в лимит: ${fom.hit_limit} раз` : ''),
-    `• отзывов о тренировках за неделю: ${fb.n ?? 0}`,
-    '',
-    `👥 Групп: ${g.groups ?? 0} (тренерских ${g.coach ?? 0}), в группах ${gm.n ?? 0} чел. · пришли по приглашению: ${ref.n ?? 0}`,
-    `🔔 Напоминания включены у ${rem.on ?? 0}`,
-  ];
-  if (top.length) lines.push('', '🔥 <b>Самые длинные серии:</b>', ...top.map((x, i) => `${i + 1}. ${name(x)} - ${x.current_streak} дн.`));
-  return lines.join('\n');
-}
-
-// Отчёт тебе каждый понедельник в 9:00 (МСК) - один раз за неделю
-async function weeklyAdminReport() {
-  const now = new Date(Date.now() + 3 * 3600000);
-  if (now.getUTCDay() !== 1 || now.getUTCHours() < 9 || now.getUTCHours() >= 12) return;
-  const key = `admin-report-${now.toISOString().slice(0, 10)}`;
-  try {
-    const claim = await query(
-      `INSERT INTO giveaway_draws (period_key, kind) VALUES ($1, 'report') ON CONFLICT (period_key) DO NOTHING RETURNING id`, [key]);
-    if (!claim.rows.length) return;
-    const admin = await query(`SELECT telegram_id FROM users WHERE LOWER(username) = 'maksimshelikh'`);
-    const chat = process.env.ADMIN_TELEGRAM_ID || admin.rows[0]?.telegram_id;
-    if (chat) await tg('sendMessage', { chat_id: chat, text: `🗓 Недельный отчёт\n\n${await buildStats()}`, parse_mode: 'HTML' });
-  } catch (err) {
-    console.error('Admin report failed:', err.message);
-  }
-}
-setTimeout(weeklyAdminReport, 30000);
-setInterval(weeklyAdminReport, 10 * 60 * 1000);
-
-// ---------- Ответы на сообщения ----------
-function welcomeText(name) {
-  return (
-    `Привет${name ? ', ' + name : ''}! 👋\n\n` +
-    '<b>Forma</b> - твой дневник тренировок.\n\n' +
-    '📝 Записывай тренировку за минуту - даже своими словами, Fom сам разложит по полям\n' +
-    '🤖 Fom считает объём, следит за пульсом и восстановлением\n' +
-    '🔥 Держи серию, смотри календарь, добавляй друзей\n\n' +
-    'Жми кнопку ниже 👇'
-  );
-}
-
-const HELP_TEXT =
-  '<b>Что умеет Forma</b>\n\n' +
-  '• Дневник: разминка, отрезки, силовая, пульс, RPE, самочувствие\n' +
-  '• Умный ввод: опиши тренировку своими словами\n' +
-  '• Fom: отзыв после тренировки, разбор недели и месяца, чат\n' +
-  '• Друзья: лента, реакции, комментарии\n\n' +
-  'Всё внутри приложения - открывай кнопкой ниже или кнопкой «Forma» слева от поля ввода.';
-
-function escapeHtml(s) {
-  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-// Нажатия на кнопки под сообщениями бота (сейчас - подтверждение входа)
-async function handleCallback(cb) {
-  // выбор телефона в рассылке «установка на экран»: показываем нужную инструкцию в том же сообщении
-  const hp = /^hp:(ios|and|menu)$/.exec(String(cb.data || ''));
-  if (hp && cb.message?.chat?.id && cb.message.chat.type === 'private') {
-    await tg('answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {});
-    const view = hp[1] === 'ios' ? [HOME_IOS + HOME_FOOT, HOME_BACK] : hp[1] === 'and' ? [HOME_ANDROID + HOME_FOOT, HOME_BACK] : [HOME_INTRO, HOME_MENU];
-    await tg('editMessageText', { chat_id: cb.message.chat.id, message_id: cb.message.message_id, text: view[0], parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: view[1] });
-    return;
-  }
-  const m = /^wl:(y|n):([a-f0-9]{24})$/.exec(String(cb.data || ''));
-  const chatId = cb.message?.chat?.id;
-  if (!m || !cb.from?.id || !chatId || cb.message?.chat?.type !== 'private') {
-    await tg('answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {});
-    return;
-  }
-  if (m[1] === 'y') {
-    const ok = await confirmLogin(m[2], cb.from);
-    await tg('answerCallbackQuery', { callback_query_id: cb.id, text: ok ? 'Готово - возвращайся в Forma' : 'Ссылка устарела' });
-    await tg('editMessageText', {
-      chat_id: chatId, message_id: cb.message.message_id,
-      text: ok ? '✅ Вход подтверждён. Возвращайся в Forma - она уже открывается.' : 'Эта ссылка для входа уже не действует. Нажми «Войти через Telegram» в Forma ещё раз.',
-    });
-  } else {
-    await denyLogin(m[2]);
-    await tg('answerCallbackQuery', { callback_query_id: cb.id, text: 'Вход отклонён' });
-    await tg('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text: '🚫 Вход отклонён. Если это были не ты - ничего больше делать не нужно.' });
-  }
-}
-
-
-// ---------- Рассылка: установка на экран «Домой» (iPhone) ----------
-const HOME_INTRO = `📲 <b>Forma на экране телефона</b>
-
-Так приложение открывается на весь экран, как обычное, работает даже когда Telegram не открывается, и не нужен магазин приложений.
-
-Выбери свой телефон 👇`;
-const HOME_IOS = `🍎 <b>iPhone - установка на экран «Домой»</b>
-
-1. Открой ссылку в <b>Safari</b>:
-${APP_URL}
-(если она открылась внутри Telegram - нажми значок компаса или «⋯» и выбери «Открыть в Safari»)
-2. Внизу нажми «Поделиться» (квадрат со стрелкой).
-3. Выбери «На экран «Домой»» и нажми «Добавить».
-4. Открой Forma с главного экрана и войди - через Telegram или по почте. Дневник и серия те же.`;
-const HOME_ANDROID = `🤖 <b>Android - установка на главный экран</b>
-
-1. Открой ссылку в <b>Chrome</b>:
-${APP_URL}
-(если она открылась внутри Telegram - нажми «⋯» и выбери «Открыть в браузере»)
-2. Нажми «⋯» справа вверху.
-3. Выбери «Установить приложение» (или «Добавить на главный экран») и подтверди.
-4. Открой Forma с главного экрана и войди - через Telegram или по почте. Дневник и серия те же.`;
-const HOME_FOOT = '\n\nЕсли что-то не получилось - пиши в <a href="https://t.me/w_m9ik">поддержку</a>.';
-const HOME_MENU = { inline_keyboard: [[{ text: '🍎 iPhone', callback_data: 'hp:ios' }, { text: '🤖 Android', callback_data: 'hp:and' }]] };
-const HOME_BACK = { inline_keyboard: [[{ text: '← Выбрать другой телефон', callback_data: 'hp:menu' }]] };
-const IOS_HOME_TEXT = HOME_INTRO; // сообщение рассылки: короткое вступление и выбор телефона
-const IOS_BROADCAST_KEY = 'ios-home-1';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function sendIosBroadcast(adminChat) {
-  await query(`CREATE TABLE IF NOT EXISTS broadcast_log (
-    key TEXT NOT NULL, telegram_id BIGINT NOT NULL, ok BOOLEAN NOT NULL DEFAULT true, at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (key, telegram_id))`);
-  // только настоящие аккаунты Telegram (почтовые аккаунты получают номера от 7·10^15), кому ещё не писали
-  const r = await query(
-    `SELECT telegram_id FROM users WHERE telegram_id < 7000000000000000
-       AND telegram_id NOT IN (SELECT telegram_id FROM broadcast_log WHERE key = $1)`, [IOS_BROADCAST_KEY]);
-  let sent = 0, failed = 0;
-  for (const row of r.rows) {
-    const res = await sendReplacing(row.telegram_id, 'home', { text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: HOME_MENU });
-    const ok = !!res?.ok;
-    ok ? sent++ : failed++;
-    await query('INSERT INTO broadcast_log (key, telegram_id, ok) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [IOS_BROADCAST_KEY, row.telegram_id, ok]).catch(() => 0);
-    await sleep(70); // Telegram разрешает около 30 сообщений в секунду; идём заметно медленнее
-  }
-  await tg('sendMessage', { chat_id: adminChat, text: `Рассылка готова: доставлено ${sent}, не доставлено ${failed} (бот не запущен у человека или заблокирован).` });
-}
-
-async function handleMessage(msg) {
-  const chatId = msg.chat?.id;
-  if (!chatId || msg.chat.type !== 'private') return;
-  const text = (msg.text || '').trim();
-  const name = escapeHtml(msg.from?.first_name);
-
-  if (text.startsWith('/start')) {
-    const payload = text.split(/\s+/)[1] || '';
-    // приглашение в группу: кнопка открывает приложение сразу на вступлении
-    const g = /^g_([a-z0-9]{4,12})$/i.exec(payload);
-    if (g) {
-      await tg('sendMessage', {
-        chat_id: chatId,
-        text: `👥 Тебя пригласили в группу в Forma!\n\nЖми кнопку - откроется приложение и предложит вступить.`,
-        reply_markup: { inline_keyboard: [[{ text: '👥 Вступить в группу', web_app: { url: `${APP_URL}?join=${g[1].toLowerCase()}` } }]] },
-      });
-      return;
-    }
-    // вход в Forma вне Telegram (сайт на главном экране): спрашиваем, точно ли это он
-    const wl = /^wl_([a-f0-9]{24})$/.exec(payload);
-    if (wl) {
-      const valid = await loginPending(wl[1]).catch(() => false);
-      if (!valid) {
-        await tg('sendMessage', { chat_id: chatId, text: 'Эта ссылка для входа уже не действует. Вернись в Forma и нажми «Войти через Telegram» ещё раз.' });
-        return;
+    const u = await query('SELECT sport, discipline FROM users WHERE id = $1', [userId]);
+    let p = {};
+    try {
+      const r = await query('SELECT * FROM athlete_profiles WHERE user_id = $1', [userId]);
+      p = r.rows[0] || {};
+    } catch (e) { /* таблицы ещё нет - не страшно */ }
+    const sport = u.rows[0]?.sport;
+    const discipline = u.rows[0]?.discipline;
+    const parts = [];
+    if (p.sex) parts.push(p.sex === 'f' ? 'женщина' : 'мужчина');
+    if (p.birth_year) parts.push(`возраст ${yearsRu(new Date().getFullYear() - p.birth_year)}`);
+    if (p.height_cm) parts.push(`рост ${p.height_cm} см`);
+    if (p.weight_kg && !forCoach) parts.push(`вес ${Number(p.weight_kg)} кг`);
+    if (p.rest_hr) parts.push(`пульс в покое ${p.rest_hr}`);
+    if (p.experience_years != null) parts.push(`стаж ${yearsRu(p.experience_years)}`);
+    if (p.level) parts.push(`уровень: ${LEVELS_RU[p.level] || p.level}`);
+    if (sport) parts.push(`вид спорта: ${SPORTS_RU[sport] || sport}${discipline ? ' - ' + discipline : ''}`);
+    const expertise = disciplineExpertise(discipline);
+    const lines = [];
+    if (parts.length) lines.push(parts.join(', '));
+    if (expertise) lines.push(expertise);
+    if (p.records) lines.push(`Личные рекорды: ${p.records}`);
+    if (p.goal) lines.push(`Цель: ${p.goal}`);
+    if (p.injuries && !forCoach) lines.push(`Травмы и ограничения: ${p.injuries}`);
+    // лучшие результаты на стартах, которые спортсмен записал в дневник
+    try {
+      const comps = await query(`SELECT id, date, competition FROM workouts WHERE user_id = $1 AND competition IS NOT NULL`, [userId]);
+      let manual = [];
+      try {
+        const m = await query(`SELECT id, discipline, result, note, to_char(date, 'YYYY-MM-DD') AS date FROM manual_records WHERE user_id = $1`, [userId]);
+        manual = m.rows.map((x) => ({ id: `m${x.id}`, date: x.date || '1900-01-01', competition: { discipline: x.discipline, result: x.result, name: x.note } }));
+      } catch (e) { /* таблицы ещё нет */ }
+      const best = bestResults([...comps.rows, ...manual]);
+      if (best.length) lines.push(`Личные рекорды (со стартов в дневнике и внесённые вручную): ${best.map((b) => `${b.discipline} - ${b.result}${b.date && b.date !== '1900-01-01' ? ` (${b.date})` : ''}`).join('; ')}`);
+    } catch (e) { /* колонки ещё нет - не страшно */ }
+    // цели на месяц и как они идут (прогресс посчитан программой)
+    if (!forCoach) try {
+      const g = await goalsFacts(userId);
+      if (g) lines.push(g);
+    } catch (e) { /* таблицы ещё нет */ }
+    // ближайшие старты из календаря
+    try {
+      const st = await query(
+        `SELECT to_char(date, 'YYYY-MM-DD') AS date, name, discipline, goal FROM planned_starts
+         WHERE user_id = $1 AND date >= CURRENT_DATE ORDER BY date LIMIT 3`, [userId]);
+      if (st.rows.length) {
+        lines.push(`Ближайшие старты: ${st.rows.map((x) => `${x.date} - ${x.name}${x.discipline ? `, ${x.discipline}` : ''}${x.goal ? `, цель ${x.goal}` : ''}`).join('; ')}`);
       }
-      await tg('sendMessage', {
-        chat_id: chatId,
-        text: '🔐 <b>Вход в Forma</b>\n\nКто-то хочет войти в твой дневник с телефона или сайта. Это ты?\n\nЕсли ты не нажимал «Войти через Telegram» - выбери «Нет, это не я».',
-        parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: [[
-          { text: '✅ Да, это я', callback_data: `wl:y:${wl[1]}` },
-          { text: '🚫 Нет, это не я', callback_data: `wl:n:${wl[1]}` },
-        ]] },
+    } catch (e) { /* таблицы ещё нет */ }
+    // утренние отметки: сон, пульс покоя, самочувствие (1–5)
+    try {
+      const mc = await query(
+        `SELECT to_char(date, 'YYYY-MM-DD') AS date, sleep_h, rest_hr, mood FROM morning_checks
+         WHERE user_id = $1 AND date >= CURRENT_DATE - 14 ORDER BY date DESC`, [userId]);
+      if (mc.rows.length) {
+        const fmt = (x) => [x.sleep_h != null && `сон ${Number(x.sleep_h)} ч`, x.rest_hr && `пульс покоя ${x.rest_hr}`, x.mood && `самочувствие ${x.mood}/5`].filter(Boolean).join(', ');
+        lines.push(`Утренние отметки (свежие сверху): ${mc.rows.slice(0, 7).map((x) => `${x.date}: ${fmt(x)}`).join('; ')}`);
+        const hrs = mc.rows.map((x) => x.rest_hr).filter(Boolean);
+        if (hrs.length >= 5) {
+          const recent = hrs.slice(0, 3), base = hrs.slice(3);
+          const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+          if (recent.length === 3 && base.length >= 2 && avg(recent) - avg(base) >= 5) {
+            lines.push(`Внимание: пульс покоя последние 3 дня в среднем на ${Math.round(avg(recent) - avg(base))} уд/мин выше обычного - возможно, организм не восстановился или начинается болезнь.`);
+          }
+        }
+      }
+    } catch (e) { /* таблицы ещё нет */ }
+    // здоровье: последний анализ крови, БАДы, питание за 3 дня
+    if (!forCoach) try {
+      const h = await healthFacts(userId);
+      if (h) lines.push(h);
+    } catch (e) { /* таблиц ещё нет */ }
+    return lines.join('\n');
+  } catch (err) {
+    console.error('Athlete context failed:', err.message);
+    return '';
+  }
+}
+
+
+// Что важно знать про дисциплину спортсмена: Fom учитывает это в каждом ответе
+export function disciplineGroupOf(discipline) {
+  const s = String(discipline || '').toLowerCase();
+  if (!s) return null;
+  if (/многобор|десятибор|семибор|пятибор/.test(s)) return 'combined';
+  if (/барьер|с\/б/.test(s)) return 'hurdles';
+  if (/ходьб/.test(s)) return 'walk';
+  if (/длинн|марафон|5000|10 ?000|стипл|кросс|3000/.test(s)) return 'long';
+  if (/средн|800|1500|миля/.test(s)) return 'middle';
+  if (/спринт|^60|100 ?м|200 ?м|400 ?м|эстафет/.test(s)) return 'sprint';
+  if (/метан|ядр|диск|копь|молот/.test(s)) return 'throws';
+  if (/прыж|длина|тройн|высот|шест/.test(s)) return 'jumps';
+  return null;
+}
+function disciplineExpertise(discipline) {
+  const g = disciplineGroupOf(discipline);
+  if (!discipline) return '';
+  const K = {
+    sprint: 'Специфика (спринт): главное - максимальная скорость, старт, техника бега и скоростная выносливость; объём в км вторичен, важны качество отрезков, полный отдых между ними (3–8 мин), сила и взрывные ОФП. Тревожные признаки: падение скорости на тех же отрезках, жалобы на заднюю поверхность бедра, высокий RPE при коротких отрезках.',
+    hurdles: 'Специфика (барьерный бег): помимо скорости важны ритм между барьерами, атака и техника прохождения, гибкость и ОФП. Смотри на качество ритма, отрезки с барьерами и без, силовую и гибкость. Риски: травмы бедра и паха, перегруз на скоростных днях.',
+    middle: 'Специфика (средние дистанции 800/1500): сочетание аэробной базы и скоростной выносливости; ключевые тренировки - интервалы на соревновательной скорости, темповые, ускорения. Следи за балансом объёма и интенсивности, пульсом в паузах и самочувствием после жёстких дней.',
+    long: 'Специфика (длинные дистанции, марафон, стипль): основа - аэробный объём, длительные, темповые и интервалы; важна недельная динамика объёма (резкий рост свыше ~10% за неделю - риск), пульс, восстановление, питание и сон. Следи за накопленной усталостью и за равномерностью нагрузки по неделям.',
+    walk: 'Специфика (спортивная ходьба): важны техника (контакт с землёй и выпрямленное колено), длинные объёмы, темповая работа на дорожке; риски - травмы голени, голеностопа и тазобедренных. Объём и техника важнее скорости на любой отдельной тренировке.',
+    jumps: 'Специфика (прыжки): ключевое - скорость разбега, отталкивание, техника и число качественных попыток; нагрузка делится на технику, скорость, прыжковую и силовую работу. Следи за числом попыток и результатами в них (лучшая попытка, стабильность), за прыжковой нагрузкой на суставы и за восстановлением между днями с прыжками.',
+    throws: 'Специфика (метания): ключевое - техника броска, взрывная сила и число качественных бросков; нагрузка делится на технику, метательные и силовые тренировки. Следи за числом бросков и лучшими результатами (по снарядам), за тяжёлой силовой и за состоянием плеча, локтя, спины и коленей.',
+    combined: 'Специфика (многоборье): несколько видов (бег, прыжки, метания) - важен баланс нагрузки между видами, чтобы не перегрузить одни и те же мышцы и сохранять свежесть для технических видов. Смотри, какие виды давно не тренировались, какие результаты растут, и обсуждай распределение нагрузки по неделе (скорость, техника, сила).',
+  };
+  return g ? K[g] : '';
+}
+
+function athleteBlock(athlete) {
+  return athlete ? `\n\nО спортсмене:\n${athlete}\n\n${ATHLETE_RULE}` : '';
+}
+
+const WEEKDAYS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+
+function weekday(dateStr) {
+  return WEEKDAYS[new Date(dateStr + 'T00:00:00Z').getUTCDay()];
+}
+
+// ---------- Темп ----------
+// «1:05» → 65, «65 сек» → 65, «57-58 с» → 57.5, «4 мин 10 с» → 250, «1:02:30» → 3750, «3 мин» → 180
+export function parseSeconds(raw) {
+  const t = String(raw ?? '').toLowerCase().replace(',', '.').replace(/[′’]/g, "'").replace(/[″”]/g, '"').trim();
+  if (!t || /\/\s*км|мин\s*\/|в\s*км/.test(t)) return null; // уже темп на км - не считаем
+  const hms = t.match(/(\d+):(\d{2})(?::(\d{2}))?/);
+  if (hms) {
+    const [a, b, c] = [Number(hms[1]), Number(hms[2]), hms[3] != null ? Number(hms[3]) : null];
+    return c != null ? a * 3600 + b * 60 + c : a * 60 + b;
+  }
+  const range = t.match(/(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)/);
+  const pick = (re) => { const m = t.match(re); return m ? Number(m[1]) : 0; };
+  // \b с русскими буквами не работает - поэтому «после буквы не идёт другая буква»
+  let min = pick(/(\d+(?:\.\d+)?)\s*(?:мин|m(?![a-zа-яё])|')/);
+  let sec = pick(/(\d+(?:\.\d+)?)\s*(?:сек|с(?![a-zа-яё])|s(?![a-zа-яё])|")/);
+  if (min && !sec) { const tail = t.match(/'\s*(\d{1,2})$/); if (tail) sec = Number(tail[1]); } // «1'30» без кавычек
+  if (range && !/мин/.test(t)) sec = (Number(range[1]) + Number(range[2])) / 2;
+  if (!min && !sec) {
+    const n = t.match(/^(\d+(?:\.\d+)?)$/);
+    if (n) sec = Number(n[1]);
+  }
+  const total = min * 60 + sec;
+  return total > 0 ? total : null;
+}
+
+// Темп мин/км: 330 с на 1000 м → «5:30/км»
+export function paceLabel(seconds, meters) {
+  if (!seconds || !meters) return null;
+  const perKm = Math.round(seconds / (meters / 1000));
+  if (perKm < 100 || perKm > 1200) return null; // быстрее 1:40/км или медленнее 20:00/км - скорее ошибка ввода
+  return `${Math.floor(perKm / 60)}:${String(perKm % 60).padStart(2, '0')}/км`;
+}
+
+// Темп для средних и длинных отрезков (от 600 м). Спринт - без темпа на км.
+function setPace(s) {
+  const m = Number(s.distance_m);
+  if (!m || m < 600) return null;
+  return paceLabel(parseSeconds(s.time_or_pace), m);
+}
+
+// «60» → «1'», «90» → «1'30"», «30» → «30"»
+export function durLabel(sec) {
+  sec = Math.round(Number(sec) || 0);
+  const m = Math.floor(sec / 60), r = sec % 60;
+  return m ? `${m}'${r ? String(r).padStart(2, '0') + '"' : ''}` : `${r}"`;
+}
+// Вставка по времени в темпе «3:40» → примерно сколько метров (темп 2:00–9:00 на км)
+function durationMeters(s) {
+  const pace = parseSeconds(String(s.time_or_pace || '').replace(/\/\s*км|мин\s*\/\s*км|в\s*км/gi, ''));
+  if (!s.duration_s || !pace || pace < 120 || pace > 540) return null;
+  return Math.round(((s.duration_s / pace) * 1000) / 10) * 10;
+}
+
+// Кроссы и длительные в тексте: «10 км за 50 мин», «12 км, 55 мин», «8 км 36:30» → считаем темп
+export function textPaces(text) {
+  const out = [];
+  const re = /(\d+(?:[.,]\d+)?)\s*км[^\d\n]{0,12}?(\d{1,2}:\d{2}(?::\d{2})?|\d{1,3}(?:[.,]\d+)?\s*мин(?:ут[аыу]?)?(?:\s*\d{1,2}\s*(?:сек|с)(?![a-zа-яё]))?)/gi;
+  for (const m of String(text || '').matchAll(re)) {
+    const km = Number(m[1].replace(',', '.'));
+    if (!km || km < 0.6 || km > 100) continue;
+    const pace = paceLabel(parseSeconds(m[2]), km * 1000);
+    if (pace) out.push(`${m[1]} км за ${m[2].trim()} → темп ≈ ${pace}`);
+  }
+  return out;
+}
+
+// Один повтор/отрезок одной строкой: «400 м ×6, время/темп 1:05, отдых 2 мин»
+function formatSet(s) {
+  const parts = [];
+  if (s.duration_s) parts.push(`по времени ${durLabel(s.duration_s)} (${s.duration_s} с)`);
+  else if (s.distance_m) parts.push(`${s.distance_m} м`);
+  if (s.reps) parts.push(`×${s.reps}`);
+  if (s.time_or_pace) parts.push(`время/темп ${s.time_or_pace}`);
+  const pace = setPace(s);
+  if (pace) parts.push(`темп ≈ ${pace}`);
+  const approx = durationMeters(s);
+  if (approx) parts.push(`≈ ${approx} м за отрезок`);
+  if (s.rest_between) parts.push(`отдых ${s.rest_between}`);
+  return parts.join(', ');
+}
+
+// Упражнение силовой/ОФП одной строкой: «присед 5×5, 80 кг»
+// Попытки в прыжках и метаниях: «Копьё: 6 поп., лучший 54.2, снаряд 800 г»
+function formatTech(e) {
+  let line = e.name || '';
+  if (e.sets) line += `: ${e.sets} поп.`;
+  if (e.reps) line += `${e.sets ? ',' : ':'} результат ${e.reps}`;
+  if (e.weight) line += `, ${e.weight}`;
+  return line.trim();
+}
+
+function formatExercise(e) {
+  let line = e.name || '';
+  if (e.sets && e.reps) line += ` ${e.sets}×${e.reps}`;
+  else if (e.sets) line += ` ${e.sets} подх.`;
+  else if (e.reps) line += ` ×${e.reps}`;
+  if (e.weight) line += `, ${e.weight}${/^[\d.,]+$/.test(e.weight) ? ' кг' : ''}`;
+  return line.trim();
+}
+
+// ---------- Беговой объём: считаем программой, а не «в уме» у модели ----------
+// Ровно так же, как в приложении (графики «Разбора», календарь, цели недели):
+// отрезки (метры × повторы) + все «N км»/«N м» в разминке и заминке + дистанция старта.
+// Метры из текста: «кросс 12 км», «3000 м», «3 000м», «ускорения 5×100 м», «6 по 400 м»
+// (темп «3:40/км», «4:00 км» и минуты «мин» не считаются)
+function textMeters(text) {
+  const t = String(text || '').replace(/(\d)[\s ](\d{3})(?!\d)/g, '$1$2');
+  const re = /(?:(\d{1,2})\s*(?:[x×х*]|по)\s*)?(?<![\d:.,])(\d+(?:[.,]\d+)?)\s*(км|km|м|m)(?![a-zа-яё])(?!\s*\/\s*[чсh])/gi;
+  let m = 0;
+  for (const x of t.matchAll(re)) {
+    const val = Number(x[2].replace(',', '.'));
+    const unit = x[3].toLowerCase();
+    const mult = x[1] && Number(x[1]) > 0 && Number(x[1]) <= 50 ? Number(x[1]) : 1;
+    if (unit === 'км' || unit === 'km') { if (val > 0 && val < 100) m += val * 1000 * mult; }
+    else if (val >= 20 && val <= 30000) m += val * mult;
+  }
+  return m;
+}
+// Самое большое расстояние, упомянутое в тексте («12 км, с вставками, 4 раза по 1 км…» → 12 км).
+// Нужно для заметок: там обычно пишут общий километраж и тут же разбивку - складывать их нельзя (был бы двойной счёт).
+function textMaxMeters(text) {
+  const t = String(text || '').replace(/(\d)[\s\u00a0](\d{3})(?!\d)/g, '$1$2');
+  const re = /(?:(\d{1,2})\s*(?:[x×х*]|по)\s*)?(?<![\d:.,])(\d+(?:[.,]\d+)?)\s*(км|km|м|m)(?![a-zа-яё])(?!\s*\/\s*[чсh])/gi;
+  let best = 0;
+  for (const x of t.matchAll(re)) {
+    const val = Number(x[2].replace(',', '.'));
+    const unit = x[3].toLowerCase();
+    const mult = x[1] && Number(x[1]) > 0 && Number(x[1]) <= 50 ? Number(x[1]) : 1;
+    let m = 0;
+    if (unit === 'км' || unit === 'km') { if (val > 0 && val < 100) m = val * 1000 * mult; }
+    else if (val >= 20 && val <= 30000) m = val * mult;
+    if (m > best) best = m;
+  }
+  return best;
+}
+// Повторы: «10», «3×4» (серии × повторы)
+function repsCount(r) {
+  const s = String(r ?? '').trim();
+  const x = /^(\d+)\s*[x×х*]\s*(\d+)$/i.exec(s);
+  if (x) return Number(x[1]) * Number(x[2]);
+  const n = parseInt(s, 10);
+  return n > 0 ? n : 1;
+}
+export function volumeKm(w) {
+  if (!w || w.type !== 'training') return 0;
+  // общий объём, который человек вписал сам, главнее любого подсчёта
+  const manual = Number(w.total_km);
+  if (manual > 0) return manual;
+  let m = 0;
+  (Array.isArray(w.sets) ? w.sets : []).forEach((s) => { m += (Number(s.distance_m) || 0) * repsCount(s.reps); });
+  m += textMeters([w.warmup, w.cooldown].filter(Boolean).join('\n'));
+  // старт: дистанция из дисциплины («5000 м», «10 км»)
+  if (w.competition && w.competition.discipline) m += textMeters(w.competition.discipline);
+  // если километраж записан только в заметках («12 км, с вставками…»), берём его; если и там, и в полях - большее (без двойного счёта)
+  m = Math.max(m, textMaxMeters(w.notes));
+  return m / 1000;
+}
+const kmFmt = (km) => String(Math.round(km * 10) / 10).replace('.', ',');
+function shiftDate(str, n) {
+  const d = new Date(str + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function mondayOfStr(str) {
+  const dow = new Date(str + 'T00:00:00Z').getUTCDay();
+  return shiftDate(str, -((dow + 6) % 7));
+}
+
+// ---------- Попытки (прыжки, броски), скоростная работа, силовая: считает программа ----------
+const numPos = (v) => { const n = parseFloat(String(v ?? '').replace(',', '.')); return Number.isFinite(n) && n > 0 ? n : 0; };
+export function attemptsOf(w) {
+  return (Array.isArray(w?.exercises) ? w.exercises : []).filter((e) => e.kind === 'tech').reduce((s, e) => s + Math.floor(numPos(e.sets)), 0);
+}
+function fastMeters(w) { // метры отрезков до 400 м
+  return (Array.isArray(w?.sets) ? w.sets : []).reduce((s, x) => { const d = Number(x.distance_m) || 0; return d > 0 && d <= 400 ? s + d * repsCount(x.reps) : s; }, 0);
+}
+function strengthStats(list) {
+  let sets = 0, ton = 0;
+  for (const w of list) for (const e of (Array.isArray(w.exercises) ? w.exercises : [])) {
+    if (e.kind === 'tech') continue;
+    const n = Math.floor(numPos(e.sets)) || (e.name ? 1 : 0);
+    sets += n;
+    ton += n * repsCount(e.reps) * numPos(e.weight) / 1000;
+  }
+  return { sets, ton: Math.round(ton * 10) / 10 };
+}
+// Лучший результат в каждом виде попыток («Прыжок с разбега» → 6.20) и число попыток по тренировкам
+function techSummary(workouts) {
+  const best = new Map();
+  const perDay = [];
+  for (const w of workouts) {
+    if (w.type !== 'training') continue;
+    const n = attemptsOf(w);
+    if (n) perDay.push(`${String(w.date).slice(0, 10)}: ${n}`);
+    for (const e of (Array.isArray(w.exercises) ? w.exercises : [])) {
+      if (e.kind !== 'tech' || !e.name) continue;
+      const v = numPos(e.reps);
+      const key = String(e.name).trim().toLowerCase();
+      const cur = best.get(key) || { name: String(e.name).trim(), best: 0, attempts: 0 };
+      cur.attempts += Math.floor(numPos(e.sets));
+      if (v > cur.best) cur.best = v;
+      best.set(key, cur);
+    }
+  }
+  return { perDay, kinds: [...best.values()] };
+}
+function periodLine(label, workouts, from, to) {
+  const list = workouts.filter((w) => { const d = String(w.date).slice(0, 10); return d >= from && d <= to; });
+  const tr = list.filter((w) => w.type === 'training');
+  const km = tr.reduce((a, w) => a + volumeKm(w), 0);
+  const rest = list.filter((w) => w.type === 'rest').length;
+  const att = tr.reduce((s, w) => s + attemptsOf(w), 0);
+  return `- ${label} (${from} - ${to}): беговой объём ${kmFmt(km)} км, тренировок ${tr.length}, дней отдыха ${rest}${att ? `, попыток (прыжков/бросков) ${att}` : ''}`;
+}
+/**
+ * Готовые итоги по неделям - модель берёт их, а не складывает десятки чисел сама (так она ошибалась).
+ * weeksBack - сколько прошлых календарных недель показать.
+ */
+export function volumeFacts(workouts, today, { weeksBack = 3, month = true, last7 = true } = {}) {
+  if (!today) return '';
+  const lines = [];
+  const mon = mondayOfStr(today);
+  lines.push(periodLine('текущая неделя, с понедельника по сегодня', workouts, mon, today));
+  for (let i = 1; i <= weeksBack; i++) {
+    const from = shiftDate(mon, -7 * i);
+    lines.push(periodLine(i === 1 ? 'прошлая неделя' : `${i} недели назад`, workouts, from, shiftDate(from, 6)));
+  }
+  if (last7) lines.push(periodLine('последние 7 дней', workouts, shiftDate(today, -6), today));
+  if (month) lines.push(periodLine('текущий месяц, с 1-го числа', workouts, today.slice(0, 8) + '01', today));
+  return `ИТОГИ ОБЪЁМА - посчитаны программой точно так же, как в приложении (графики и календарь). Когда говоришь об объёме за неделю или месяц, бери цифры отсюда и НЕ пересчитывай их сам. Минуты «по времени» и ОФП сюда не входят - о них можно сказать отдельно.
+${lines.join('\n')}`;
+}
+
+// ---------- Время тренировки ----------
+function minutesOf(t) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || ''));
+  return m ? +m[1] * 60 + +m[2] : null;
+}
+function durText(min) {
+  if (!(min > 0)) return '';
+  const h = Math.floor(min / 60), m = min % 60;
+  return h ? `${h} ч${m ? ` ${m} мин` : ''}` : `${m} мин`;
+}
+export function timeLabel(w) {
+  const a = minutesOf(w.start_time), b = minutesOf(w.end_time);
+  if (a == null) return '';
+  let len = b != null ? b - a : null;
+  if (len != null && len <= 0) len += 24 * 60; // закончилась после полуночи
+  return `${w.start_time}${b != null ? `–${w.end_time}` : ''}${len ? ` (${durText(len)})` : ''}`;
+}
+// Момент начала/конца тренировки в минутах от «эпохи» (дата + время); без времени - null
+function stamp(w, which) {
+  const t = minutesOf(which === 'end' ? (w.end_time || w.start_time) : w.start_time);
+  if (t == null) return null;
+  return Math.round(Date.parse(String(w.date).slice(0, 10) + 'T00:00:00Z') / 60000) + t;
+}
+// Сколько часов отдыха было между прошлой тренировкой и этой (если у обеих есть время)
+export function restGapText(workout, previous) {
+  const prev = (previous || []).find((w) => w.type === 'training');
+  if (!prev) return '';
+  const a = stamp(prev, 'end'), b = stamp(workout, 'start');
+  if (a == null || b == null || b <= a) {
+    const days = Math.round((Date.parse(String(workout.date).slice(0, 10)) - Date.parse(String(prev.date).slice(0, 10))) / 86400000);
+    return days > 0 ? `С прошлой тренировки (${String(prev.date).slice(0, 10)}) прошло ${days} дн. (точное время не указано).` : '';
+  }
+  const h = Math.round((b - a) / 6) / 10;
+  return `Отдых с конца прошлой тренировки (${String(prev.date).slice(0, 10)}${prev.end_time ? ' до ' + prev.end_time : ''}, RPE ${prev.rpe ?? '-'}) до начала этой - ${String(h).replace('.', ',')} ч.`;
+}
+// В какое время суток тренировки заходят лучше: среднее самочувствие и RPE по утру / дню / вечеру
+export function timeOfDayFacts(workouts) {
+  const buckets = { 'утро (до 12:00)': [], 'день (12–17)': [], 'вечер (после 17:00)': [] };
+  for (const w of workouts || []) {
+    if (w.type !== 'training') continue;
+    const t = minutesOf(w.start_time);
+    if (t == null) continue;
+    const k = t < 720 ? 'утро (до 12:00)' : t < 1020 ? 'день (12–17)' : 'вечер (после 17:00)';
+    buckets[k].push(w);
+  }
+  const avg = (arr) => { const v = arr.filter((x) => x > 0); return v.length ? (v.reduce((a, b) => a + b, 0) / v.length).toFixed(1).replace('.', ',') : '-'; };
+  const lines = Object.entries(buckets).filter(([, l]) => l.length)
+    .map(([k, l]) => `${k}: ${l.length} трен., самочувствие в среднем ${avg(l.map((w) => Number(w.feeling)))}/10, RPE ${avg(l.map((w) => Number(w.rpe)))}/10`);
+  return lines.length ? `Время тренировок (посчитано программой): ${lines.join('; ')}.` : '';
+}
+
+// Высота: какой по счёту день на высоте (от 1000 м) или сколько дней назад спустился.
+// workout - текущая запись, previous - предыдущие записи (новые сначала).
+export function altitudeFacts(workout, previous) {
+  const HIGH = 1000;
+  const high = (w) => w && w.type !== 'rest' && Number(w.altitude_m) >= HIGH;
+  const day = (w) => String(w.date).slice(0, 10);
+  const diff = (a, b) => Math.round((Date.parse(a) - Date.parse(b)) / 86400000);
+  const prev = (previous || []).filter((w) => w.type === 'training');
+  if (high(workout)) {
+    let first = day(workout);
+    for (const w of prev) {
+      if (!high(w) || diff(first, day(w)) > 3) break; // пропуск больше 3 дней - значит, был перерыв
+      first = day(w);
+    }
+    const n = diff(day(workout), first) + 1;
+    return `Высота (посчитано программой): тренировка на ≈${workout.altitude_m} м - ${n}-й день на высоте (первая запись на высоте ${first}).`;
+  }
+  const lastHigh = prev.find(high);
+  if (lastHigh) {
+    const ago = diff(day(workout), day(lastHigh));
+    if (ago > 0 && ago <= 28) return `Высота (посчитано программой): спустился с высоты ≈${lastHigh.altitude_m} м (${lastHigh.place || 'сбор'}) ${ago} дн. назад.`;
+  }
+  return '';
+}
+
+// Коротко, что было на тренировке: «5×1000 по 3:05», «кросс 12 км», «старт 800 м - 2:05,3»
+export function shortWorkout(w) {
+  if (!w) return '';
+  if (w.type === 'rest') return 'отдых';
+  const c = w.competition;
+  if (c && (c.discipline || c.result)) return `старт ${[c.discipline, c.result].filter(Boolean).join(' - ')}`;
+  const sets = (Array.isArray(w.sets) ? w.sets : []).filter((x) => x.distance_m || x.duration_s);
+  if (sets.length) {
+    const x = sets[0];
+    const what = x.duration_s ? durLabel(x.duration_s) : x.distance_m >= 1000 && x.distance_m % 100 === 0 ? `${String(x.distance_m / 1000).replace('.', ',')} км` : `${x.distance_m}`;
+    const one = `${x.reps > 1 ? x.reps + '×' : ''}${what}${x.time_or_pace ? ' по ' + x.time_or_pace : ''}`;
+    return sets.length > 1 ? `${one} + ещё ${sets.length - 1}` : one;
+  }
+  const t = String(w.warmup || w.notes || '').trim().split('\n')[0];
+  if (t) return t.length > 40 ? t.slice(0, 38) + '…' : t;
+  if ((w.exercises || []).length) return 'ОФП / силовая';
+  return 'тренировка';
+}
+
+/**
+ * Полное описание одной записи для ИИ: дата, день недели, разминка, повторы, заминка, RPE, самочувствие, заметка.
+ * Используется и в отзыве после тренировки, и в разборе нагрузки, и в чате.
+ */
+export function describeWorkout(w) {
+  const d = String(w.date).slice(0, 10);
+  const head = `${d} (${weekday(d)})${w.session > 1 ? ', вторая тренировка дня' : ''}`;
+
+  if (w.type === 'rest') {
+    return `${head}: отдых${w.notes ? `, заметка: ${w.notes}` : ''}`;
+  }
+
+  const parts = [];
+  const c = w.competition;
+  if (c && (c.discipline || c.result)) {
+    parts.push(`СТАРТ${c.name ? ` «${c.name}»` : ''}: ${[c.discipline, c.result && `результат ${c.result}`, c.place && `${c.place} место`].filter(Boolean).join(', ')}`);
+  }
+  const tl = timeLabel(w);
+  if (tl) parts.push(`время ${tl}`);
+  if (w.place || w.altitude_m != null) parts.push(`место: ${w.place || 'не указано'}${w.altitude_m != null ? `, высота ≈ ${w.altitude_m} м` : ''}${w.camp ? ', СБОР' : ''}`);
+  if (w.warmup) parts.push(`разминка: ${w.warmup}`);
+  const sets = (Array.isArray(w.sets) ? w.sets : []).map(formatSet).filter(Boolean);
+  if (sets.length) parts.push(`беговая работа: ${sets.join('; ')}`);
+  const allEx = Array.isArray(w.exercises) ? w.exercises : [];
+  const tech = allEx.filter((e) => e.kind === 'tech').map(formatTech).filter(Boolean);
+  if (tech.length) parts.push(`техника, попытки (прыжки/метания): ${tech.join('; ')}`);
+  const exercises = allEx.filter((e) => e.kind !== 'tech').map(formatExercise).filter(Boolean);
+  if (exercises.length) parts.push(`силовая/ОФП: ${exercises.join('; ')}`);
+  if (w.cooldown) parts.push(`заминка: ${w.cooldown}`);
+  const pulse = [];
+  if (w.hr_avg) pulse.push(`средний ${w.hr_avg}`);
+  if (w.hr_max) pulse.push(`максимальный ${w.hr_max}`);
+  if (w.hr_min) pulse.push(`минимальный в паузах ${w.hr_min}`);
+  if (pulse.length) parts.push(`пульс (уд/мин): ${pulse.join(', ')}`);
+  const km = volumeKm(w);
+  if (km > 0) parts.push(`беговой объём записи ${kmFmt(km)} км`);
+  parts.push(`RPE ${w.rpe ?? '-'}/10, самочувствие ${w.feeling ?? '-'}/10`);
+  if (w.notes) parts.push(`заметка: ${w.notes}`);
+  const paces = textPaces([w.warmup, w.cooldown, w.notes].filter(Boolean).join('\n'));
+  if (paces.length) parts.push(`темп по тексту: ${paces.join('; ')}`);
+
+  return `${head}: тренировка - ${parts.join(' | ')}`;
+}
+
+// --- Gemini: те же запросы, что у Claude (текст, фото, PDF), в формате Google ---
+function toGeminiParts(content) {
+  if (typeof content === 'string') return [{ text: content }];
+  const parts = [];
+  for (const b of Array.isArray(content) ? content : []) {
+    if (b.type === 'text') parts.push({ text: b.text });
+    else if (b.source?.type === 'base64') parts.push({ inlineData: { mimeType: b.source.media_type, data: b.source.data } });
+  }
+  return parts;
+}
+
+async function callGemini({ model, maxTokens, system, messages }) {
+  if (!GEMINI_API_KEY) { const e = new Error('GEMINI_API_KEY is not set'); e.aiDown = true; markAiDown(); throw e; }
+  const mainModel = model === MODEL_INSIGHTS ? GEMINI_MODEL_INSIGHTS : GEMINI_MODEL;
+  // если основная модель перегружена или недоступна - пробуем запасные (GEMINI_FALLBACK_MODELS через запятую)
+  const models = [mainModel, ...GEMINI_FALLBACK_MODELS.filter((m) => m && m !== mainModel)];
+
+  // Gemini ждёт чередование «пользователь - модель»: подряд идущие реплики одной роли склеиваем
+  const contents = [];
+  for (const m of messages) {
+    const role = m.role === 'assistant' ? 'model' : 'user';
+    const parts = toGeminiParts(m.content);
+    if (!parts.length) continue;
+    if (contents.length && contents[contents.length - 1].role === role) contents[contents.length - 1].parts.push(...parts);
+    else contents.push({ role, parts });
+  }
+  while (contents.length && contents[0].role === 'model') contents.shift(); // диалог должен начинаться с человека
+  const body = {
+    contents,
+    generationConfig: { maxOutputTokens: Math.max(maxTokens, 1000), temperature: 0.7 },
+  };
+  if (system) body.systemInstruction = { parts: [{ text: system }] };
+
+  // До двух кругов по моделям: если Google перегружен (503), через пару секунд пробуем ещё раз
+  let lastErr;
+  for (let round = 0; round < 2; round++) {
+    if (round === 1) await new Promise((r) => setTimeout(r, 2500));
+    let transient = false; // была временная перегрузка - тогда второй круг имеет смысл
+    for (const gModel of models) {
+      const cooling = (coolingUntil.get(gModel) || 0) > Date.now();
+      if (cooling && round === 0 && gModel !== models[models.length - 1]) continue; // недавно упала - не тратим время
+      try { return await geminiOnce(gModel, body); }
+      catch (e) {
+        lastErr = e;
+        if (e.aiDown) throw e; // ключ не работает - запасная модель не поможет
+        if (![400, 404, 429, 500, 502, 503, 504].includes(e.status)) throw e;
+        const quota = e.status === 429 && /quota|exceeded/i.test(String(e.message));
+        if (!quota && [429, 500, 502, 503, 504].includes(e.status)) transient = true;
+        if ([429, 500, 502, 503, 504].includes(e.status)) {
+          // дневной лимит кончился - модель отдыхает 10 минут; перегрузка - 15 секунд
+          coolingUntil.set(gModel, Date.now() + (quota ? 600_000 : 15_000));
+        }
+        console.warn(`Gemini ${gModel} недоступна (${e.status}: ${String(e.message).slice(0, 200)}), пробую следующую`);
+      }
+    }
+    if (!transient) break; // лимит кончился или запрос не подходит - повтор через секунды не поможет
+  }
+  // Все модели заняты или без лимита: людям показываем понятное «Fom настраивается», а не техническую ошибку
+  if ([429, 500, 502, 503, 504].includes(lastErr?.status)) { lastErr.aiDown = true; markAiDown(); }
+  throw lastErr;
+}
+
+// Как просить модель не «думать» долго. Разные поколения Gemini принимают разные настройки;
+// запоминаем, что сработало для модели, чтобы не тратить лишние запросы.
+const THINKING_VARIANTS = [{ thinkingBudget: 0 }, { thinkingLevel: 'minimal' }, { thinkingLevel: 'low' }, null];
+const thinkingChoice = new Map(); // модель -> индекс рабочего варианта
+const coolingUntil = new Map();   // модель -> до какого времени её пропускаем (после 503/429)
+
+async function geminiOnce(gModel, body) {
+  let vi = thinkingChoice.get(gModel) ?? 0;
+  for (let attempt = 0; ; attempt++) {
+    const cfg = { ...body.generationConfig };
+    if (THINKING_VARIANTS[vi]) cfg.thinkingConfig = THINKING_VARIANTS[vi];
+    let response;
+    try {
+      response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(gModel)}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+        body: JSON.stringify({ ...body, generationConfig: cfg }),
+        signal: AbortSignal.timeout(45000),
       });
-      return;
+    } catch (err) {
+      if (attempt === 0 && err?.name !== 'TimeoutError') { await new Promise((r) => setTimeout(r, 800)); continue; }
+      throw err;
     }
-    // приглашение от друга: запоминаем, кто позвал
-    if (/^r_/i.test(payload)) await rememberReferral(msg.from.id, payload).catch(() => {});
-    const sent = await tg('sendPhoto', {
-      chat_id: chatId,
-      photo: WELCOME_IMAGE,
-      caption: welcomeText(name),
-      parse_mode: 'HTML',
-      reply_markup: OPEN_BUTTON,
-    });
-    // если картинка недоступна - отправляем просто текст
-    if (!sent?.ok) {
-      await tg('sendMessage', { chat_id: chatId, text: welcomeText(name), parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      // 400: возможно, модель не принимает этот вариант настройки «размышлений» - пробуем следующий
+      if (response.status === 400 && vi < THINKING_VARIANTS.length - 1) { vi++; continue; }
+      const apiErr = new Error(`Gemini API error: ${response.status} ${errText.slice(0, 400)}`);
+      apiErr.status = response.status;
+      if (response.status === 401 || response.status === 403 || (response.status === 400 && /API key not valid|API_KEY_INVALID/i.test(errText))) {
+        apiErr.aiDown = true; markAiDown();
+      }
+      throw apiErr;
     }
-    return;
-  }
 
-  if (text.startsWith('/giveaway')) {
-    const u = await query('SELECT id FROM users WHERE telegram_id = $1', [msg.from.id]);
-    const streak = u.rows[0] ? await honestStreak(u.rows[0].id) : 0;
-    const lines = Object.entries(GIVEAWAYS).map(([kind, g]) => {
-      const ok = streak >= g.minStreak;
-      return `${g.emoji} <b>${g.title}</b> - ${g.prize}\n` +
-        `Нужна честная серия от ${g.minStreak} дн. · итоги ${mskDateLabel(nextDrawAt(kind))} (МСК)\n` +
-        (ok ? '✅ Ты участвуешь!' : `Ещё ${g.minStreak - streak} дн. до участия`);
-    });
-    await tg('sendMessage', {
-      chat_id: chatId,
-      parse_mode: 'HTML',
-      reply_markup: OPEN_BUTTON,
-      text: `🎁 <b>Розыгрыши Forma</b>\n\nТвоя честная серия: <b>${streak} дн.</b> 🔥\n\n${lines.join('\n\n')}\n\n` +
-        '<i>Честная серия - дни подряд, где запись сделана в тот же день или не позже следующего. Чем длиннее серия, тем больше билетов.</i>',
-    });
-    return;
+    thinkingChoice.set(gModel, vi);
+    markAiUp();
+    const data = await response.json();
+    const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
+    return text || null;
   }
+}
 
-  // Удалить пробежку по жалобе - только для админа: /delrun 12
-  const delRun = /^\/delrun\s+(\d+)$/.exec(text);
-  if (delRun) {
-    if (!(await isAdmin(msg.from.id))) return;
-    const ok = await adminDeleteRun(parseInt(delRun[1], 10));
-    await sendText(msg.chat.id, ok ? `Пробежка #${delRun[1]} удалена.` : 'Такой пробежки нет.');
-    return;
+// --- OpenAI-совместимый провайдер: те же запросы в формате chat/completions ---
+function toOpenAiContent(content) {
+  if (typeof content === 'string') return content;
+  const parts = [];
+  for (const b of Array.isArray(content) ? content : []) {
+    if (b.type === 'text') parts.push({ type: 'text', text: b.text });
+    else if (b.type === 'image' && b.source?.type === 'base64') parts.push({ type: 'image_url', image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` } });
+    else if (b.type === 'document' && b.source?.type === 'base64') parts.push({ type: 'file', file: { filename: 'document.pdf', file_data: `data:${b.source.media_type};base64,${b.source.data}` } });
   }
+  return parts;
+}
 
-  // Тестовый розыгрыш - только для админа: /draw_week или /draw_month
-  if (text === '/draw_week' || text === '/draw_month') {
-    if (!(await isAdmin(msg.from.id))) return;
-    await runDraw(text === '/draw_week' ? 'week' : 'month', sendText, { force: true });
-    return;
+async function callOpenAi({ model, maxTokens, system, messages }) {
+  if (!OPENAI_API_KEY) { const e = new Error('OPENAI_API_KEY is not set'); e.aiDown = true; markAiDown(); throw e; }
+  const main = model === MODEL_INSIGHTS ? OPENAI_MODEL_INSIGHTS : OPENAI_MODEL;
+  const models = [main, ...OPENAI_FALLBACK_MODELS.filter((m) => m !== main)];
+  const msgs = [];
+  if (system) msgs.push({ role: 'system', content: system });
+  for (const m of messages) {
+    const content = toOpenAiContent(m.content);
+    if (!content.length) continue;
+    msgs.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content });
   }
+  const isOpenAi = /(^|\.)openai\.com$/.test(new URL(OPENAI_BASE_URL).hostname);
 
-  // Посмотреть, как выглядит напоминание - только для админа
-  if (text === '/remind_test') {
-    if (!(await isAdmin(msg.from.id))) return;
-    const u = await query(
-      `SELECT u.first_name, u.current_streak, (SELECT MAX(date) FROM workouts w WHERE w.user_id = u.id) AS last_date
-       FROM users u WHERE telegram_id = $1`, [msg.from.id]);
-    const today = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
-    await sendTgHtml(chatId, reminderText(u.rows[0] || {}, today));
-    return;
+  let lastErr;
+  for (const m of models) {
+    const body = { model: m, messages: msgs };
+    // у самого OpenAI новые модели принимают max_completion_tokens, у остальных (DeepSeek, OpenRouter) - max_tokens
+    if (isOpenAi) body.max_completion_tokens = Math.max(maxTokens, 1000); else body.max_tokens = Math.max(maxTokens, 1000);
+    if (OPENAI_REASONING_EFFORT) body.reasoning_effort = OPENAI_REASONING_EFFORT;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let res;
+      try {
+        res = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(60000),
+        });
+      } catch (err) {
+        lastErr = err;
+        if (attempt === 0 && err?.name !== 'TimeoutError') { await new Promise((r) => setTimeout(r, 800)); continue; }
+        break; // таймаут или сеть - пробуем следующую модель
+      }
+      if (res.ok) {
+        const data = await res.json();
+        markAiUp();
+        const text = data.choices?.[0]?.message?.content;
+        return (Array.isArray(text) ? text.map((p) => p.text || '').join('') : String(text || '')).trim() || null;
+      }
+      const errText = await res.text();
+      const err = new Error(`AI API error: ${res.status} ${errText.slice(0, 500)}`);
+      err.status = res.status;
+      lastErr = err;
+      // ключ не работает или закончились деньги - запасная модель не поможет
+      if ([401, 402, 403].includes(res.status) || (res.status === 429 && /insufficient_quota|billing|credit/i.test(errText))) { err.aiDown = true; markAiDown(); throw err; }
+      if (attempt === 0 && [429, 500, 502, 503, 504].includes(res.status)) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+      break; // 400/404 - модель не подошла, пробуем следующую
+    }
   }
+  if (lastErr && !lastErr.aiDown && (!lastErr.status || [429, 500, 502, 503, 504].includes(lastErr.status))) { lastErr.aiDown = true; markAiDown(); }
+  throw lastErr || new Error('AI request failed');
+}
 
-  // Статистика приложения - только для админа
-  if (text === '/stats') {
-    if (!(await isAdmin(msg.from.id))) return;
-    await tg('sendMessage', { chat_id: chatId, text: await buildStats(), parse_mode: 'HTML' });
-    return;
+async function callClaude({ model, maxTokens, system, messages }) {
+  if (AI_PROVIDER === 'openai') {
+    try { return await callOpenAi({ model, maxTokens, system, messages }); }
+    catch (e) {
+      // основной сервис недоступен (деньги кончились, перегрузка) - выручает Gemini, если ключ задан
+      if (GEMINI_API_KEY && (e.aiDown || e.status >= 500)) return callGemini({ model, maxTokens, system, messages });
+      throw e;
+    }
   }
+  if (AI_PROVIDER === 'gemini') return callGemini({ model, maxTokens, system, messages });
+  const body = { model, max_tokens: maxTokens, messages };
+  if (system) body.system = system;
 
-  // Итоги недели прямо сейчас - только для админа, только себе
-  if (text === '/digest_test') {
-    if (!(await isAdmin(msg.from.id))) return;
-    const n = await sendWeeklyDigests(sendTgHtml, { force: true, onlyTelegramId: msg.from.id });
-    if (!n) await sendTgHtml(chatId, 'За эту неделю пока нет записей - итоги не из чего собрать.');
-    return;
-  }
+  // Таймаут 60 с (фото бланков читаются дольше обычного ответа) и ОДИН повтор, если ИИ перегружен
+  // (429, 5xx) или оборвалась сеть. По таймауту не повторяем - иначе платим дважды за долгий запрос.
+  for (let attempt = 0; ; attempt++) {
+    let response;
+    try {
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(60000),
+      });
+    } catch (err) {
+      if (attempt === 0 && err?.name !== 'TimeoutError') { await new Promise((r) => setTimeout(r, 800)); continue; }
+      throw err;
+    }
 
+    if (!response.ok) {
+      const errText = await response.text();
+      if (attempt === 0 && [429, 500, 502, 503, 529].includes(response.status)) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
+      const apiErr = new Error(`Claude API error: ${response.status} ${errText}`);
+      if (response.status === 401 || response.status === 403) { apiErr.aiDown = true; markAiDown(); }
+      throw apiErr;
+    }
 
-  // Рассылка «как поставить Forma на экран Домой» - только для админа.
-  // /ios_test - сообщение придёт только тебе (посмотреть, как выглядит), /ios_send - всем, кто пользуется Forma через Telegram.
-  // Повторно одному и тому же человеку не отправляется.
-  if (text === '/testers_test') {
-    if (!(await isAdmin(msg.from.id))) return;
-    const n = String(process.env.TESTERS_EMAILS || '').split(/[,;\s]+/).filter((x) => x.includes('@')).length;
-    const info = testerDayInfo();
-    if (!info) { await tg('sendMessage', { chat_id: chatId, text: `Писем сегодня нет. Адресов в списке: ${n}. Проверь TESTERS_EMAILS и TESTERS_START (день 1 - первый день теста, формат ГГГГ-ММ-ДД).` }); return; }
-    const m = testerMail(info);
-    await tg('sendMessage', { chat_id: chatId, text: `Адресов: ${n}. Письмо уйдёт каждый день.\n\nТема: ${m.subject}\n\n${m.text}`, disable_web_page_preview: true });
-    return;
+    markAiUp();
+    const data = await response.json();
+    const textBlock = data.content.find((b) => b.type === 'text');
+    return textBlock ? textBlock.text : null;
   }
-  if (text === '/ios_test') {
-    if (!(await isAdmin(msg.from.id))) return;
-    await tg('sendMessage', { chat_id: chatId, text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: HOME_MENU });
-    return;
-  }
-  if (text === '/ios_send') {
-    if (!(await isAdmin(msg.from.id))) return;
-    await tg('sendMessage', { chat_id: chatId, text: 'Начинаю рассылку. Напишу, когда закончу.' });
-    sendIosBroadcast(chatId).catch((e) => tg('sendMessage', { chat_id: chatId, text: `Рассылка остановилась: ${e.message}` }));
-    return;
-  }
+}
 
-  if (text.startsWith('/help')) {
-    await tg('sendMessage', { chat_id: chatId, text: HELP_TEXT, parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
-    return;
-  }
+/**
+ * Разбор нагрузки за период (неделя/месяц): тренды, риск перегруза, рекомендации.
+ */
+const INSIGHT_FOCUS = {
+  km: 'беговой объём (км)', fast: 'скоростная работа (метры отрезков до 400 м)', reps: 'число отрезков',
+  attempts: 'число попыток (прыжков/бросков)', ofp: 'силовая и ОФП (подходы)', tonn: 'силовой тоннаж',
+  count: 'число тренировок', rest: 'дни отдыха', feelrpe: 'самочувствие и нагрузка (RPE)',
+};
+export async function getPeriodInsight(workouts, period, athlete = '', { discipline = '', focus = [] } = {}) {
+  const summary = workouts.map(describeWorkout).join('\n');
+  const group = disciplineGroupOf(discipline);
+  const tr = workouts.filter((w) => w.type === 'training');
+  const km = workouts.reduce((s, w) => s + volumeKm(w), 0);
+  const att = tr.reduce((s, w) => s + attemptsOf(w), 0);
+  const fast = tr.reduce((s, w) => s + fastMeters(w), 0);
+  const reps = tr.reduce((s, w) => s + (w.sets || []).reduce((q, x) => q + ((Number(x.distance_m) || Number(x.duration_s)) ? repsCount(x.reps) : 0), 0), 0);
+  const st = strengthStats(tr);
+  const tech = techSummary(workouts);
+  const jumpish = group === 'jumps' || group === 'throws';
 
-  // любое другое сообщение - мягко отправляем в приложение
-  await tg('sendMessage', {
-    chat_id: chatId,
-    text: 'Все тренировки и Fom живут в приложении 👇',
-    reply_markup: OPEN_BUTTON,
+  // Что именно показать модели как главное - зависит от дисциплины
+  const facts = [];
+  if (jumpish) {
+    facts.push(`Попытки (посчитаны программой, бери эти числа): всего ${att}${tech.perDay.length ? ` (по датам: ${tech.perDay.join(', ')})` : ''}.`);
+    if (tech.kinds.length) facts.push(`По видам: ${tech.kinds.map((k) => `${k.name} - ${k.attempts} поп.${k.best ? `, лучший результат ${String(k.best).replace('.', ',')}` : ''}`).join('; ')}.`);
+    facts.push(`Беговая работа (разбег, скорость, разминки) - вторична: ${kmFmt(km)} км за период. Не делай её главным показателем и не обсуждай «беговой объём» как цель.`);
+  } else if (group === 'sprint' || group === 'hurdles') {
+    facts.push(`Скоростная работа (посчитана программой): отрезков до 400 м - ${fast} м суммарно, всего отрезков ${reps}. Общий беговой объём ${kmFmt(km)} км вторичен: для спринтера важны качество, скорость и полный отдых, а не километры.`);
+    if (att) facts.push(`Попытки/техника: ${att} поп.`);
+  } else if (group === 'combined') {
+    facts.push(`Беговой объём ${kmFmt(km)} км (примерно), попыток в прыжках/метаниях ${att}. Смотри баланс между видами.`);
+  } else {
+    facts.push(`Беговой объём за этот период (посчитан программой точно так же, как в приложении - бери это число и НЕ пересчитывай): ${kmFmt(km)} км. Минуты «по времени» и ОФП сюда не входят.`);
+    if (att) facts.push(`Попытки/техника: ${att} поп.`);
+  }
+  if (st.sets) facts.push(`Силовая и ОФП: ${st.sets} подходов${st.ton ? `, тоннаж ≈ ${String(st.ton).replace('.', ',')} т` : ''}.`);
+
+  const focusNames = (Array.isArray(focus) ? focus : []).map((k) => INSIGHT_FOCUS[k]).filter(Boolean);
+  const focusLine = focusNames.length ? `Спортсмен сам настроил «Разбор» на показатели: ${focusNames.join(', ')}. Разбери их в первую очередь и подробнее, остальное - коротко.` : '';
+
+  const sections = jumpish
+    ? `**Объём и частота:** сколько тренировок и дней отдыха, сколько попыток (прыжков/бросков) за период и за тренировку.
+**Результаты и техника:** лучшие результаты, стабильность попыток, динамика; если попыток мало или их нет - так и скажи.
+**Динамика нагрузки:** растёт ли RPE и число попыток, есть ли резкие скачки; отдельно - силовая и скоростная работа.
+**Восстановление и самочувствие:** как менялось самочувствие, есть ли тревожные признаки (падающее самочувствие при росте нагрузки, жалобы на суставы, спину, плечо). Пульс - только если он есть в записях.`
+    : (group === 'sprint' || group === 'hurdles')
+      ? `**Объём и частота:** сколько тренировок и дней отдыха, сколько скоростной работы (метры и число отрезков), полный ли отдых между отрезками.
+**Динамика нагрузки:** растёт ли RPE и скоростной объём, есть ли резкие скачки; отдельно - сила и ОФП.
+**Скорость и качество:** видна ли динамика времён на отрезках (только если они записаны), что с техникой.
+**Пульс и восстановление:** только если в записях есть пульс.
+**Самочувствие:** как менялось, есть ли тревожные признаки.`
+      : `**Объём и частота:** сколько тренировок и дней отдыха, общий беговой объём (км/минуты), есть ли баланс.
+**Динамика нагрузки:** растёт ли RPE и объём, есть ли резкие скачки.
+**Пульс и восстановление:** только если в записях есть пульс - как меняются средний/максимальный и насколько хорошо пульс опускается в паузах.
+**Самочувствие:** как менялось, есть ли тревожные признаки (падающее самочувствие при растущей нагрузке).`;
+
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
+
+Сейчас ты как помощник, который раз в ${period === 'month' ? 'месяц' : 'неделю'} делает разбор тренировочного процесса спортсмена, как бухгалтер сводит баланс. Учитывай дисциплину спортсмена${discipline ? ` (${discipline})` : ''}: оценивай нагрузку теми показателями, которые для неё главные (для прыгунов и метателей - попытки и результаты, для спринтеров - скоростная работа и качество, для стайеров - километраж), а не одним только беговым объёмом.
+
+Вот записи с начала ${period === 'month' ? 'текущего месяца' : 'текущей недели (с понедельника)'} по сегодня:
+${summary || 'записей нет'}
+
+${facts.join('\n')}
+${focusLine}
+${timeOfDayFacts(workouts)}
+
+${TIME_RULE}
+
+${ALT_RULE}
+
+${VOLUME_RULE}
+
+${PULSE_RULE}
+
+${PACE_RULE}
+
+${COMP_RULE}
+
+Дай структурированный разбор на русском, используя заголовки **жирным**:
+${sections}
+**Риск перегрузки:** явно скажи, есть он или нет, и почему.
+**Что обсудить с тренером:** 1-2 пункта - наблюдения, которые стоит показать тренеру. Не составляй план на будущее.
+
+Пиши тепло, но по делу. Если данных мало - так и скажи, не выдумывай. Дни отдыха оценок не имеют - не упоминай их самочувствие и RPE.`;
+
+  return callClaude({
+    model: MODEL_INSIGHTS,
+    maxTokens: 900,
+    messages: [{ role: 'user', content: prompt }],
   });
 }
 
-// GET /api/bot/giveaway - статус розыгрышей для приложения
-router.get('/giveaway', requireTelegramAuth, async (req, res) => {
-  try {
-    const u = await query('SELECT id FROM users WHERE telegram_id = $1', [req.telegramUser.id]);
-    if (!u.rows[0]) return res.status(404).json({ error: 'User not found' });
-    res.json(await giveawayStatus(u.rows[0].id));
-  } catch (err) {
-    console.error('Giveaway status failed:', err.message);
-    res.status(500).json({ error: 'Не удалось загрузить розыгрыши' });
+/**
+ * Чат с Fom: отвечает на вопросы спортсмена, опираясь на его реальные записи.
+ * history - предыдущие сообщения диалога (без текущего вопроса).
+ * today - сегодняшняя дата пользователя 'ГГГГ-ММ-ДД'.
+ */
+export async function getChatReply(contextSummary, history, message, today, athlete = '', workouts = []) {
+  const systemPrompt = `${FOM_INTRO}${athleteBlock(athlete)}
+Ты заботливый помощник спортсмена.
+Ты отвечаешь на вопросы, опираясь ТОЛЬКО на реальные данные его тренировок, которые даны ниже. Если чего-то в данных нет - честно скажи, что не можешь это посчитать, не выдумывай цифры.
+
+Сегодня: ${today} (${weekday(today)}). Когда спрашивают «за неделю», имей в виду текущую календарную неделю с понедельника по сегодня; но если неделя только началась (сегодня понедельник или вторник) - скорее всего, человек спрашивает про прошлую полную неделю: назови её объём и коротко уточни, что текущая только началась. «За месяц» - с 1-го числа текущего месяца. Всегда называй, за какие даты цифра.
+
+${VOLUME_RULE}
+
+${PULSE_RULE}
+
+${PACE_RULE}
+
+${COMP_RULE}
+
+${volumeFacts(workouts, today)}
+
+${timeOfDayFacts(workouts)}
+
+${TIME_RULE}
+
+${ALT_RULE}
+
+${SUPP_RULE}
+
+${HEALTH_RULE}
+
+Записи тренировок за последние 30 дней:
+${contextSummary || 'записей нет'}
+
+Если просят план или «что делать завтра» - можешь объяснить общие принципы, но прямо скажи, что конкретный план лучше согласовать с тренером.
+
+Отвечай кратко и по делу, на русском, дружелюбным тоном. Если вопрос не про тренировки/восстановление/здоровье - можешь мягко напомнить, что ты помогаешь именно с этим.`;
+
+  return callClaude({
+    model: MODEL_SMART,
+    maxTokens: 900,
+    system: systemPrompt,
+    messages: [...history, { role: 'user', content: message }],
+  });
+}
+
+/**
+ * Fom оценивает тренировку в контексте предыдущих дней
+ * и даёт короткий фидбек + совет по восстановлению.
+ */
+/**
+ * Отзыв Fom о тренировке - с дневным лимитом (список лимитов в aiQuota.js).
+ * Если лимит исчерпан - бросает ошибку с quota = true: запись при этом уже сохранена,
+ * просто отзыв не пишется. Если ИИ не ответил - попытка возвращается.
+ */
+export async function getWorkoutFeedback(workout, recentWorkouts, athlete = '', similar = null) {
+  const uid = workout?.user_id;
+  if (uid) {
+    const q = await takeQuota(uid, 'feedback');
+    if (!q.ok) { const e = new Error('Дневной лимит отзывов Fom исчерпан'); e.quota = true; throw e; }
   }
-});
-
-// ---------- Картинки для сторис ----------
-// Telegram публикует сторис только по ссылке на картинку, поэтому приложение присылает готовую
-// картинку сюда, а мы отдаём её по короткой ссылке примерно час (в памяти сервера, без базы).
-const stories = new Map(); // id -> { buf, at }
-const STORY_TTL = 60 * 60 * 1000;
-const STORY_MAX = 100;
-const STORY_PER_USER = 5; // чтобы один человек не забил память сервера
-
-function cleanStories() {
-  const now = Date.now();
-  for (const [id, s] of stories) if (now - s.at > STORY_TTL) stories.delete(id);
-  while (stories.size > STORY_MAX) stories.delete(stories.keys().next().value); // самые старые
+  try {
+    return await getWorkoutFeedbackRaw(workout, recentWorkouts, athlete, similar);
+  } catch (err) {
+    if (uid) await refundQuota(uid, 'feedback').catch(() => {});
+    throw err;
+  }
 }
 
-function storyQuotaOk(owner) {
-  let n = 0;
-  for (const s of stories.values()) if (s.owner === owner) n++;
-  return n < STORY_PER_USER;
+async function getWorkoutFeedbackRaw(workout, recentWorkouts, athlete = '', similar = null) {
+  const recentSummary = recentWorkouts.map(describeWorkout).join('\n');
+  const dayLabel = workout.isBackdated ? 'Тренировка (внесена задним числом)' : 'Сегодняшняя тренировка';
+
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
+Ты заботливый "бухгалтер нагрузки" спортсмена.
+Тебе дана тренировка и записи за дни перед ней.
+
+${dayLabel}:
+${describeWorkout({ ...workout, type: 'training' })}
+
+Предыдущие дни для контекста:
+${recentSummary || 'данных нет'}
+${restGapText(workout, recentWorkouts)}
+${timeOfDayFacts([workout, ...recentWorkouts])}
+${altitudeFacts(workout, recentWorkouts)}
+${similar ? `\nПохожая тренировка раньше (та же основная работа):\n${describeWorkout(similar)}\nКоротко сравни с ней: время отрезков, пульс, RPE - стало лучше или хуже.\n` : ''}
+${VOLUME_RULE}
+
+${PULSE_RULE}
+
+${PACE_RULE}
+
+${COMP_RULE}
+
+${TIME_RULE}
+
+${ALT_RULE}
+
+Дай ответ в 3-4 коротких предложения на русском:
+1. Оценка этой тренировки в контексте предыдущих дней (хорошо выполнена / есть признаки перебора).
+2. Если видишь риск перегрузки (высокий RPE несколько дней подряд, падающее самочувствие, резкий рост объёма, пульс в паузах опускается хуже обычного) - прямо укажи на это. Если указан пульс - коротко оцени восстановление в паузах.
+3. ${workout.isBackdated ? 'Один короткий вывод по этой тренировке (она уже в прошлом).' : 'Одна короткая подсказка по восстановлению (сон, питание, заминка) - без указаний, как тренироваться дальше.'}
+Пиши тепло, но по делу, без воды.`;
+
+  return callClaude({
+    model: MODEL_SMART,
+    maxTokens: 550,
+    messages: [{ role: 'user', content: prompt }],
+  });
 }
 
-// POST /api/bot/story - тело запроса: JPEG-картинка (image/jpeg), до 1.5 МБ
-router.post('/story', requireTelegramAuth, express.raw({ type: 'image/jpeg', limit: '1500kb' }), (req, res) => {
-  const buf = req.body;
-  const isJpeg = Buffer.isBuffer(buf) && buf.length > 1000 && buf[0] === 0xff && buf[1] === 0xd8;
-  if (!isJpeg) return res.status(400).json({ error: 'Нужна картинка JPEG' });
-  cleanStories();
-  if (!storyQuotaOk(req.telegramUser.id)) return res.status(429).json({ error: 'Слишком много картинок подряд - подожди немного' });
-  const id = crypto.randomBytes(12).toString('hex');
-  stories.set(id, { buf, at: Date.now(), owner: req.telegramUser.id });
-  res.json({ url: `${PUBLIC_URL}/api/bot/story/${id}.jpg` });
-});
+/**
+ * Умный ввод: спортсмен пишет тренировку своими словами, Fom раскладывает её по полям формы.
+ * Возвращает объект с полями формы (без проверки - её делает сервер в workouts.js).
+ */
+export async function parseWorkoutText(text, discipline = '') {
+  const system = `Ты - помощник тренировочного дневника по лёгкой атлетике. Спортсмен описал тренировку своими словами. Разложи текст по полям и верни ТОЛЬКО JSON (без пояснений и без markdown) строго такого вида:
+{
+  "type": "training" или "rest",
+  "warmup": строка или null,
+  "sets": [ { "distance_m": число или null, "duration_s": число секунд или null, "reps": число или null, "time_or_pace": строка или null, "rest_between": строка или null } ],
+  "exercises": [ { "name": строка, "sets": число или null, "reps": строка или null, "weight": строка или null, "kind": "tech" или null } ],
+  "cooldown": строка или null,
+  "rpe": число 1-10 или null,
+  "feeling": число 1-10 или null,
+  "hr_avg": число или null,
+  "hr_max": число или null,
+  "hr_min": число или null,
+  "notes": строка или null,
+  "start_time": "ЧЧ:ММ" или null,
+  "end_time": "ЧЧ:ММ" или null,
+  "place": строка или null
+}
 
-// POST /api/bot/export - выгрузка дневника (CSV-файл), отдаём по короткой ссылке, чтобы Telegram скачал
-router.post('/export', requireTelegramAuth, express.raw({ type: 'text/csv', limit: '3mb' }), (req, res) => {
-  const buf = req.body;
-  if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'Пустой файл' });
-  cleanStories();
-  if (!storyQuotaOk(req.telegramUser.id)) return res.status(429).json({ error: 'Слишком много файлов подряд - подожди немного' });
-  const id = crypto.randomBytes(12).toString('hex');
-  stories.set(id, { buf, at: Date.now(), type: 'text/csv; charset=utf-8', owner: req.telegramUser.id });
-  res.json({ url: `${PUBLIC_URL}/api/bot/story/${id}.csv` });
-});
+Правила:
+- "sets" - беговые отрезки основной работы. «6×400 по 65 отдых 2 мин» → {"distance_m":400,"reps":6,"time_or_pace":"65 сек","rest_between":"2 мин"}. «3×1 км» → distance_m 1000. Время/темп пиши как у спортсмена («1:05», «65 сек», «3:20/км»).
+- Если отрезки разные («400, 300, 200») - отдельный элемент на каждый.
+- Обозначения времени: «1'» = 1 минута, «30"» = 30 секунд, «1'30"» = 1 минута 30 секунд, «2'» = 2 минуты. Так же пиши их и в ответе (time_or_pace, rest_between): «1'», «30"».
+- Отрезки ПО ВРЕМЕНИ (фартлек, вставки, «10 по 1 минуте») → "duration_s" в секундах, "distance_m": null. Темп вставки («в темпе 3:40») → "time_or_pace": «3:40/км». Отдых между ними («через 1' спокойно», «1 мин трусцой») → "rest_between".
+- Вставки ВНУТРИ кросса («кросс 10 км, внутри 10 вставок по 1' в темпе 3:40 через 1' спокойно»): кросс → "warmup" («кросс 10 км с вставками»), вставки → "sets" по времени. Вставки уже входят в эти 10 км - не прибавляй их к объёму.
+- Кросс, лёгкий бег, СБУ, суставная перед работой → "warmup" коротким текстом (например «3 км трусцой + СБУ»). После работы → "cooldown".
+- Если тренировка - только длительный бег/кросс без отрезков, запиши его в "warmup" (например «кросс 12 км, 55 мин»), а "sets" оставь пустым.
+- Силовая, ОФП, барьерные упражнения, пресс, планка → "exercises". Вес - только число в кг, если указан («80»), или «свой вес». Повторы строкой («10», «30 сек», «по 5 на ногу»).
+- ПРЫЖКИ И МЕТАНИЯ (длина, тройной, высота, шест, ядро, диск, копьё, молот): сами попытки - это "exercises" с "kind": "tech". name - вид и снаряд («Длина с разбега», «Высота», «Копьё 800 г»), sets - число попыток, reps - результат или лучший результат строкой («7.12», «1.95», «54.2»), weight - вес снаряда или высота планки/разбег, если сказано («800 г», «планка 1.90», «12 шагов»). Обычные силовые и ОФП - "kind": null.
+- "start_time"/"end_time" - во сколько была тренировка, если сказано: «в 18:00» → start_time "18:00"; «с 10 до 12» → "10:00" и "12:00"; «утром в 7» → "07:00". Не сказано - null.
+- "place" - где была тренировка, если сказано: «в манеже» → "Манеж"; «на стадионе Лужники» → "Лужники"; «сбор в Кисловодске» → "Кисловодск". Коротко, с большой буквы. Не сказано - null.
+- "rpe" - насколько тяжело: если есть число - бери его; если словами: «легко» ≈ 3, «средне/нормально» ≈ 5, «тяжело» ≈ 8, «на пределе/убился» ≈ 9–10. Не упомянуто - null.
+- "feeling" - самочувствие: «отлично/бодро» ≈ 9, «хорошо» ≈ 7, «так себе» ≈ 5, «плохо/разбит» ≈ 3. Не упомянуто - null.
+- Пульс: «ср 150», «средний 150» → hr_avg; «макс 182» → hr_max; «в паузах падал до 110», «мин 110» → hr_min.
+- "type": "rest", только если человек явно пишет, что это день отдыха/выходной.
+- Всё остальное важное (погода, покрытие, что болит, ощущения) → "notes" коротко.
+- Ничего не выдумывай. Если чего-то нет в тексте - null или пустой массив.
 
-// GET /api/bot/story/:id.jpg - сама картинка (её забирает Telegram)
-router.get('/story/:file', (req, res) => {
-  const id = String(req.params.file || '').replace(/\.(jpg|csv)$/, '');
-  const s = /^[a-f0-9]{24}$/.test(id) && stories.get(id);
-  if (!s || Date.now() - s.at > STORY_TTL) return res.status(404).json({ error: 'Картинка устарела' });
-  res.set('Content-Type', s.type || 'image/jpeg');
-  if (s.type) res.set('Content-Disposition', 'attachment; filename="forma-diary.csv"');
-  res.set('Cache-Control', 'public, max-age=3600');
-  res.send(s.buf);
-});
+Если текст начинается с «Тренировка из файла часов» - это круги (lap) с часов по порядку:
+- Первые спокойные круги (помечены «разминка», или медленный темп и низкий пульс перед работой) → "warmup" одной строкой с суммой: «3,2 км, 16:10».
+- Круги «работа» (или быстрые круги с высоким пульсом) → "sets". Подряд идущие одинаковые по дистанции работы объединяй в ОДИН элемент: reps = сколько их, time_or_pace = времена через запятую («1:05, 1:04, 1:03, 1:05»), если их не больше 10, иначе диапазон («1:02–1:06»).
+- Круги «отдых»/«восстановление» между работами → "rest_between" у этих отрезков: время отдыха (например «1:30») и, если дистанция есть, «трусцой 200 м».
+- Последние спокойные круги после работы → "cooldown" с суммой.
+- Если работы нет (все круги похожи - автокруг по 1 км), это длительный/кросс: запиши в "warmup" итог («кросс 12,4 км, 58:30, 4:43/км»), "sets" пустой.
+- Пульс за всю тренировку («Итого: … пульс ср … макс …») → hr_avg и hr_max. «Пульс в паузах» → hr_min.
+- rpe и feeling из файла не бывает - оставь null.`;
 
-// POST /api/bot/webhook - сюда Telegram присылает сообщения боту
-router.post('/webhook', (req, res) => {
-  // проверяем, что запрос действительно от Telegram (секрет знает только Telegram и наш сервер)
-  const got = String(req.headers['x-telegram-bot-api-secret-token'] || '');
-  const ok = WEBHOOK_SECRET && got.length === WEBHOOK_SECRET.length &&
-    crypto.timingSafeEqual(Buffer.from(got), Buffer.from(WEBHOOK_SECRET));
-  if (!ok) return res.status(401).end();
+  const raw = await callClaude({
+    model: MODEL_SMART,
+    maxTokens: 2000,
+    system: discipline ? `${system}\n\nДисциплина спортсмена: ${discipline}. Понимай жаргон и сокращения именно этой дисциплины.` : system,
+    messages: [{ role: 'user', content: text }],
+  });
 
-  res.json({ ok: true }); // отвечаем Telegram сразу, а сообщение обрабатываем следом
-  if (req.body?.message) handleMessage(req.body.message).catch((err) => console.error('Bot message failed:', err.message));
-  if (req.body?.callback_query) handleCallback(req.body.callback_query).catch((err) => console.error('Bot callback failed:', err.message));
-});
+  const match = raw && raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Fom вернул не JSON');
+  return JSON.parse(match[0]);
+}
 
-export default router;
+
+
+/**
+ * Итоги недели от Fom - короткое сообщение в бота по воскресеньям.
+ */
+export async function getWeeklyDigest(workouts, athlete = '', name = '') {
+  const summary = workouts.map(describeWorkout).join('\n');
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
+Подведи итоги недели спортсмена${name ? ` по имени ${name}` : ''} для короткого сообщения в Telegram.
+
+Записи за неделю (пн–вс):
+${summary}
+
+Беговой объём за неделю (посчитан программой, как в приложении - бери это число, не пересчитывай): ${kmFmt(workouts.reduce((a, w) => a + volumeKm(w), 0))} км.
+
+${VOLUME_RULE}
+
+${PACE_RULE}
+
+Формат - 4–6 коротких строк, без заголовков и markdown-звёздочек, можно 2–3 эмодзи:
+- сколько тренировок и дней отдыха, примерный объём (км) и ОФП;
+- лучшая или самая тяжёлая тренировка недели одной фразой;
+- что заметил в самочувствии, пульсе, RPE (если есть данные);
+- одна тёплая фраза-поддержка без советов, как тренироваться дальше.
+Не выдумывай цифры, которых нет.`;
+  return callClaude({ model: MODEL, maxTokens: 500, messages: [{ role: 'user', content: prompt }] });
+}
+
+// «Подпись» основной работы: одинаковые отрезки → похожие тренировки (например, «400x6»)
+export function workSignature(sets) {
+  const parts = (Array.isArray(sets) ? sets : [])
+    .filter((x) => x.distance_m || x.duration_s)
+    .map((x) => (x.duration_s ? `${x.duration_s}sx${x.reps || 1}` : `${x.distance_m}x${x.reps || 1}`));
+  return parts.length ? parts.join('+') : null;
+}
+
+/**
+ * Для тренера: короткий вывод по одному спортсмену (3–4 предложения).
+ * facts - цифры, посчитанные программой; workouts - записи за 2 недели.
+ */
+export async function getCoachAthleteSummary(name, facts, workouts, athlete = '') {
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
+Сейчас ты пишешь не спортсмену, а его ТРЕНЕРУ - коротко, как ассистент тренера. Спортсмен: ${name}.
+
+Цифры (посчитаны программой, бери их, не пересчитывай):
+${facts}
+
+Записи за последние 2 недели (новые сверху):
+${workouts.map(describeWorkout).join('\n') || 'записей нет'}
+
+${VOLUME_RULE}
+
+${PULSE_RULE}
+
+${TIME_RULE}
+
+${ALT_RULE}
+
+Напиши тренеру 3–4 коротких предложения на русском, без заголовков и markdown:
+- что главное произошло за неделю (объём, интенсивность, самочувствие, сон, высота - только то, что есть в данных);
+- есть ли признаки перегруза или недовосстановления, с конкретными цифрами и днями;
+- о чём стоит поговорить со спортсменом (1 пункт).
+Не составляй план и не давай указаний, как тренировать - решает тренер. Никаких диагнозов. Не выдумывай цифры.`;
+  return callClaude({ model: MODEL, maxTokens: 350, messages: [{ role: 'user', content: prompt }] });
+}
+
+/**
+ * Для тренера: сводка недели по всей группе. lines - по строке фактов на спортсмена.
+ */
+export async function getCoachTeamDigest(groupName, weekLabel, lines, totals) {
+  const prompt = `${FOM_INTRO}
+Сейчас ты пишешь ТРЕНЕРУ группы «${groupName}» сводку по его спортсменам за ${weekLabel}.
+
+Итого по группе (посчитано программой): ${totals}
+
+По спортсменам (посчитано программой; «флаги» - автоматические пометки):
+${lines.join('\n') || 'данных нет'}
+
+${ALT_RULE}
+
+Формат - короткое сообщение без markdown-звёздочек, 3 блока, каждый с новой строки и эмодзи в начале:
+⚠️ Обратить внимание - 1–4 спортсмена с конкретной причиной в цифрах (или «никого, неделя ровная»);
+✅ Хорошее - рекорды, стабильность, прогресс (если есть);
+🏔 На сборе - только если кто-то тренируется на высоте.
+Каждый пункт - одна строка: «Имя - причина». Без плана и указаний, как тренировать. Не выдумывай ничего сверх данных.`;
+  return callClaude({ model: MODEL, maxTokens: 500, messages: [{ role: 'user', content: prompt }] });
+}
+
+/**
+ * Комментарий Fom к анализу крови: связь с нагрузкой перед сдачей, сравнение с прошлым анализом.
+ */
+export async function getBloodComment(test, prevTest, loadFacts, athlete = '') {
+  const lines = (t) => (Array.isArray(t.markers) ? t.markers : []).map(markerLine).join('\n');
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
+Спортсмен внёс анализ крови. Помоги ему понять его в связи с тренировками.
+
+Анализ от ${test.date}${test.lab ? ` (${test.lab})` : ''} - «ниже/выше нормы» посчитано программой по нормам лаборатории:
+${lines(test)}
+${prevTest ? `\nПрошлый анализ от ${prevTest.date}:\n${lines(prevTest)}\n` : ''}
+Нагрузка за 3 недели до сдачи (посчитано программой):
+${loadFacts || 'записей тренировок нет'}
+
+${HEALTH_RULE}
+
+${ALT_RULE}
+
+Ответ на русском, 4–7 коротких строк без markdown-звёздочек:
+- что вне нормы или заметно изменилось с прошлого раза (если есть прошлый) и что это обычно значит у спортсменов - простыми словами;
+- могла ли на это повлиять нагрузка (объём, тяжёлые тренировки накануне, высота) - только если это правда следует из данных;
+- что обсудить с врачом (если есть что) и когда может иметь смысл пересдать;
+- если всё в норме - коротко порадуйся и скажи, какие показатели полезно отслеживать спортсмену.
+Последней строкой: «Это не диагноз - решения по лечению и добавкам принимает врач.» Не назначай лекарств и доз.`;
+  return callClaude({ model: MODEL_INSIGHTS, maxTokens: 700, messages: [{ role: 'user', content: prompt }] });
+}
+
+/**
+ * Комментарий Fom к питанию за день: хватает ли энергии и белка под нагрузку и цели.
+ */
+export async function getFoodDayComment(dayFacts, athlete = '') {
+  const prompt = `${FOM_INTRO}${athleteBlock(athlete)}
+Спортсмен фотографирует еду, а программа примерно считает КБЖУ. Посмотри на его день.
+
+${dayFacts}
+
+Правила: цифры - грубая оценка по фото, и спортсмен мог сфотографировать не всё - помни об этом. Главное для спортсмена - чтобы еды хватало под нагрузку и восстановление; про недобор говори прямо, про «много» - бережно. Никаких жёстких диет, подсчёта «запрещённых» продуктов и стыда за еду. Если цель - набрать массу, а белка или энергии явно мало - скажи об этом и предложи 1–2 простые идеи, что добавить (обычная еда, не БАДы). Если цель - похудеть, не предлагай урезать еду в дни тяжёлых тренировок.
+
+Ответ - 3–4 коротких предложения на русском, без markdown.`;
+  return callClaude({ model: MODEL, maxTokens: 350, messages: [{ role: 'user', content: prompt }] });
+}
+
+
+/**
+ * Примерный план на неделю под дисциплину спортсмена. Это ЧЕРНОВИК-ПРЕДЛОЖЕНИЕ: у спортсмена может быть тренер,
+ * поэтому план подаётся как идея, которую стоит согласовать (в отличие от обычных ответов Fom, где планов нет).
+ */
+export async function getWeekPlan(workouts, athlete = '', discipline = '', today = '') {
+  const summary = workouts.map(describeWorkout).join('\n');
+  const prompt = `Тебя зовут Fom - ты помощник спортсмена-легкоатлета в тренировочном дневнике. Составь ПРИМЕРНЫЙ план тренировок на ближайшие 7 дней${today ? ` (начиная с ${today}, ${weekday(today)})` : ''}.${athleteBlock(athlete)}
+
+Дисциплина спортсмена: ${discipline || 'не указана (общая лёгкая атлетика)'}.
+
+Последние записи за 3 недели:
+${summary || 'записей нет - составь осторожный план для среднего уровня'}
+
+${VOLUME_RULE}
+
+Требования:
+- Учитывай специфику дисциплины: спринт и барьеры - скорость, старты, техника, скоростная выносливость, ОФП и сила; средние дистанции - темповая и интервальная работа, аэробная база; длинные дистанции и ходьба - объём, длительные, темповые; прыжки - разбег, отталкивание, техника, прыжковая работа и сила; метания - техника броска, метательные и силовые, взрывная сила; многоборье - по очереди разные виды, техника, скорость и сила, не перегружай одни и те же группы мышц.
+- Сверяйся с нагрузкой за последние недели: не повышай объём резко (не больше примерно 10% за неделю), учитывай RPE, самочувствие, травмы и ограничения. При признаках усталости - легче.
+- Включи 1–2 дня отдыха или лёгкого восстановления. Не ставь два тяжёлых дня подряд.
+- Формат: по дням (Пн … Вс) - коротко: «**Пн** - что делать (метры, повторы, отдых, примерная интенсивность)». В конце одной строкой - на что смотреть по самочувствию.
+- В самом конце добавь: «Это примерный план от Fom - согласуй его с тренером, если он у тебя есть.»
+- Пиши по-русски, ясно, без воды. Ничего не выдумывай про состояние здоровья, если данных нет.`;
+  return callClaude({ model: MODEL_INSIGHTS, maxTokens: 1100, messages: [{ role: 'user', content: prompt }] });
+}
+
+
+/**
+ * Fom считает беговой объём записи. Цифра программы (volumeKm) - это «разминка + заминка из текста + метры × повторы»,
+ * но она не видит отрезки по времени (фартлек, вставки), темп в минутах и т.п. Поэтому Fom читает всю запись,
+ * раскладывает объём по частям и называет итог. Результат: { fom_km, parts: [{label, km}], note }.
+ */
+export async function estimateVolume(w) {
+  const bare = { ...w, total_km: null }; // без числа, которое вписал сам человек - считаем «с нуля»
+  const programKm = volumeKm(bare);
+  const prompt = `Ты - Fom, помощник легкоатлета. Посчитай БЕГОВОЙ объём этой тренировки в километрах максимально точно.
+
+Запись:
+${describeWorkout(bare)}
+
+Программа посчитала по метрам и тексту: ${programKm > 0 ? kmFmt(programKm) + ' км' : 'не смогла посчитать'}.
+
+${VOLUME_RULE}
+
+Правила:
+- Считай только бег (и ходьбу для ходоков). Силовая, ОФП, прыжки, броски, барьерные упражнения НЕ входят.
+- Сложи: разминку, всю беговую работу (метры × повторы; отрезки по времени - по указанному темпу, если темпа нет, по лёгкому разумному темпу и скажи об этом в note), заминку, дистанцию старта.
+- Если вставки сделаны ВНУТРИ кросса - они уже входят в километраж кросса, второй раз не считай.
+- Отдых между повторами трусцой считай, только если он указан в метрах или километрах.
+- Если в записи есть явная цифра общего километража («всего 12 км») - используй её.
+- Ничего не выдумывай: если расстояние нигде не указано и не вычисляется, верни null.
+
+Верни ТОЛЬКО JSON без пояснений: {"km": число или null, "parts": [{"label": "разминка", "km": число}], "note": "одно короткое предложение по-русски или пустая строка"}`;
+  const raw = await callClaude({ model: MODEL_INSIGHTS, maxTokens: 500, messages: [{ role: 'user', content: prompt }] });
+  const m = raw && raw.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('Fom вернул не JSON');
+  const j = JSON.parse(m[0]);
+  const km = Number(j.km);
+  return {
+    fom_km: Number.isFinite(km) && km > 0 && km < 200 ? Math.round(km * 100) / 100 : null,
+    program_km: Math.round(programKm * 100) / 100,
+    parts: (Array.isArray(j.parts) ? j.parts : []).slice(0, 8)
+      .map((p) => ({ label: String(p.label || '').slice(0, 30), km: Math.round(Number(p.km) * 100) / 100 }))
+      .filter((p) => p.label && Number.isFinite(p.km) && p.km > 0),
+    note: String(j.note || '').slice(0, 200),
+  };
+}
