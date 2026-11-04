@@ -30,14 +30,14 @@ dotenv.config();
 
 const app = express();
 
-// За Railway стоит один прокси: так req.ip — настоящий адрес клиента, а не адрес прокси
+// За Railway стоит один прокси: так req.ip - настоящий адрес клиента, а не адрес прокси
 // (без этого ограничитель запросов считал бы всех людей как одного).
 app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS) || 1);
 app.disable('x-powered-by');
 
 app.use(cors());
 
-// Медленные запросы (дольше 0,8 с) пишем в лог Railway строкой «SLOW …» — по ним видно, что именно тормозит
+// Медленные запросы (дольше 0,8 с) пишем в лог Railway строкой «SLOW …» - по ним видно, что именно тормозит
 app.use((req, res, next) => {
   const t0 = Date.now();
   res.on('finish', () => {
@@ -48,7 +48,7 @@ app.use((req, res, next) => {
 });
 
 // Сжатие ответов (gzip): список записей и подобные ответы на медленной сети уменьшаются в 5–10 раз.
-// Своя маленькая обёртка на встроенном zlib — без новых пакетов.
+// Своя маленькая обёртка на встроенном zlib - без новых пакетов.
 app.use((req, res, next) => {
   const origJson = res.json.bind(res);
   res.json = (body) => {
@@ -69,7 +69,7 @@ app.use((req, res, next) => {
 });
 
 // Общий потолок запросов: на человека (по подписи Telegram) или, без подписи, на IP.
-// Webhook Telegram и проверка здоровья не считаем — они от самого Telegram / Railway.
+// Webhook Telegram и проверка здоровья не считаем - они от самого Telegram / Railway.
 app.use('/api', rateLimit({
   windowMs: 60_000,
   max: 600, // с запасом: одна загрузка ленты тянет десятки картинок-аватарок
@@ -77,7 +77,7 @@ app.use('/api', rateLimit({
   skip: (req) => req.path === '/bot/webhook' || req.path === '/strava/webhook',
 }));
 
-// «Здоровье» принимает фото еды и бланков анализов — им нужен запас по размеру.
+// «Здоровье» принимает фото еды и бланков анализов - им нужен запас по размеру.
 // Сначала проверяем подпись Telegram и только потом читаем тяжёлое тело запроса:
 // раньше 10 МБ разбирались ещё до проверки, и любой аноним мог гонять тяжёлые запросы.
 app.use('/api/health', requireTelegramAuth, express.json({ limit: '10mb' }), protectAsync(healthRoutes));
@@ -86,7 +86,7 @@ app.use(express.json());
 // Дневные лимиты на платные вызовы ИИ (см. aiQuota.js). Ставим ПЕРЕД роутерами: сначала проверка лимита,
 // потом обработчик. Отзыв о тренировке считается внутри ai.js (он пишется ещё и при сохранении записи),
 // а здесь для кнопки «Обновить отзыв» лимит только проверяем, чтобы человек сразу увидел понятное сообщение.
-// Если ключ ИИ не принимается — сразу понятное сообщение (см. aiGuard.js), лимиты людей не тратятся
+// Если ключ ИИ не принимается - сразу понятное сообщение (см. aiGuard.js), лимиты людей не тратятся
 app.post('/api/chat', requireTelegramAuth, aiGuard);
 app.post('/api/workouts/parse', requireTelegramAuth, aiGuard);
 app.post('/api/workouts/:id/feedback', requireTelegramAuth, aiGuard);
@@ -99,7 +99,7 @@ app.post('/api/workouts/:id/volume', requireTelegramAuth, aiQuota('volume'));
 app.get('/api/insights/plan', requireTelegramAuth, aiQuota('plan'));
 app.get('/api/insights', requireTelegramAuth, aiQuota('insights'));
 
-// Ошибка в async-обработчике иначе «подвешивает» запрос до таймаута (Express 4) — protectAsync
+// Ошибка в async-обработчике иначе «подвешивает» запрос до таймаута (Express 4) - protectAsync
 // превращает её в нормальный ответ 500. Для роутеров с собственной обёрткой это безвредно.
 app.use('/api/auth', protectAsync(authRoutes));
 app.use('/api/workouts', protectAsync(workoutRoutes));
@@ -111,15 +111,15 @@ app.use('/api/partners', protectAsync(partnerRoutes)); // совместные �
 app.use('/api/coach', protectAsync(coachRoutes)); // кабинет тренера: команда, спортсмен, сводка недели, задания
 app.use('/api/push', protectAsync(pushRoutes)); // push-уведомления в мобильное приложение
 app.use('/api/safety', protectAsync(safetyRoutes)); // жалобы и блокировка пользователей
-app.use('/api/email', protectAsync(emailAuthRoutes)); // вход по почте и паролю — для тех, у кого не работает Telegram
+app.use('/api/email', protectAsync(emailAuthRoutes)); // вход по почте и паролю - для тех, у кого не работает Telegram
 app.use('/api/webauth', protectAsync(webAuthRoutes)); // вход вне Telegram: код → бот → ключ сессии
 app.use('/api/strava', protectAsync(stravaRoutes)); // подключение Strava: тренировки сами попадают в дневник
 app.use('/api/geo', protectAsync(geoRoutes)); // место тренировки: поиск и высота над уровнем моря
-app.use('/api/asset', protectAsync(assetRoutes)); // скрипт Telegram, шрифты, картинки подарков — для работы в России без VPN
+app.use('/api/asset', protectAsync(assetRoutes)); // скрипт Telegram, шрифты, картинки подарков - для работы в России без VPN
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Единый обработчик ошибок: наружу — короткое сообщение, подробности (и стек) только в лог.
+// Единый обработчик ошибок: наружу - короткое сообщение, подробности (и стек) только в лог.
 // Без него Express при NODE_ENV не равном production показывает человеку стек ошибки.
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
@@ -130,7 +130,7 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ error: 'Неверный запрос' });
   }
   console.error('Request failed:', req.method, req.originalUrl, '-', err?.message || err);
-  res.status(500).json({ error: 'Что-то пошло не так — попробуй ещё раз' });
+  res.status(500).json({ error: 'Что-то пошло не так - попробуй ещё раз' });
 });
 
 const PORT = process.env.PORT || 3000;
