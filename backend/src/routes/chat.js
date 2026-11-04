@@ -8,7 +8,7 @@ import { getClientToday } from '../streak.js';
 
 const router = Router();
 
-// ---------- Лимит сообщений Fom: 7 в день на человека (админу — без лимита) ----------
+// ---------- Лимит сообщений Fom: 7 в день на человека (админу - без лимита) ----------
 export const CHAT_DAILY_LIMIT = Number(process.env.CHAT_DAILY_LIMIT) || 7;
 const usageReady = (async () => {
   await dbReady;
@@ -28,7 +28,7 @@ const usageReady = (async () => {
   }
 })();
 
-// День лимита — по Москве (чтобы нельзя было «сбросить» лимит, подкрутив дату в телефоне)
+// День лимита - по Москве (чтобы нельзя было «сбросить» лимит, подкрутив дату в телефоне)
 function mskToday() {
   return new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
 }
@@ -38,7 +38,7 @@ async function usedToday(userId) {
   return r.rows[0]?.count || 0;
 }
 
-// GET /api/chat/limit — сколько сообщений осталось сегодня
+// GET /api/chat/limit - сколько сообщений осталось сегодня
 router.get('/limit', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -57,7 +57,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  // Ограничиваем длину: одно сообщение до 2000 символов, в памяти диалога — последние 20 сообщений.
+  // Ограничиваем длину: одно сообщение до 2000 символов, в памяти диалога - последние 20 сообщений.
   // Так никто не сможет «накрутить» огромный запрос к ИИ за твой счёт.
   const message = (req.body.message || '').toString().trim().slice(0, 2000);
   const history = (Array.isArray(req.body.history) ? req.body.history : [])
@@ -71,7 +71,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
 
   const today = getClientToday(req);
 
-  // лимит: сначала «занимаем» сообщение, если ИИ не ответит — вернём его обратно
+  // лимит: сначала «занимаем» сообщение, если ИИ не ответит - вернём его обратно
   const admin = await isAdmin(req.telegramUser.id);
   let left = null;
   if (!admin) {
@@ -84,13 +84,13 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       [user.id, mskToday(), CHAT_DAILY_LIMIT]
     );
     if (!r.rows.length) {
-      return res.status(429).json({ error: `На сегодня ${CHAT_DAILY_LIMIT} сообщений Fom закончились — он снова ответит завтра 🙂`, left: 0 });
+      return res.status(429).json({ error: `На сегодня ${CHAT_DAILY_LIMIT} сообщений Fom закончились - он снова ответит завтра 🙂`, left: 0 });
     }
     left = CHAT_DAILY_LIMIT - r.rows[0].count;
   }
 
   try {
-    // Берём записи целиком — с разминкой, повторами, силовой/ОФП и заминкой
+    // Берём записи целиком - с разминкой, повторами, силовой/ОФП и заминкой
     const result = await query(
       `${WORKOUT_SELECT} WHERE w.user_id = $1 AND w.date >= $2::date - 30 AND COALESCE(w.source, '') <> 'strava' ORDER BY w.date ASC`,
       [user.id, today]
