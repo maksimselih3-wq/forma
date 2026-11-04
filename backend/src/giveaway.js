@@ -8,11 +8,11 @@ import { referralBonuses, referralStats } from './social.js';
  *  🔥 Неделя: честная серия от 7 дней → простые подарки, итоги каждое воскресенье в 20:00 (МСК).
  *  💎 Месяц: честная серия от 30 дней → крутые подарки, итоги в последний день месяца в 20:00 (МСК).
  *
- * Честная серия — дни подряд, где запись сделана в тот же день или не позже следующего.
+ * Честная серия - дни подряд, где запись сделана в тот же день или не позже следующего.
  * Дни, заполненные задним числом, в розыгрыше не считаются (иначе серию легко «нарисовать»).
  *
  * Билеты: чем длиннее серия, тем больше шансов, но без перекоса:
- *   неделя — 1 билет за каждые 7 дней (максимум 5), месяц — 1 билет за каждые 30 дней (максимум 3).
+ *   неделя - 1 билет за каждые 7 дней (максимум 5), месяц - 1 билет за каждые 30 дней (максимум 3).
  *
  * Победителей выбирает сервер сам. Подарки отправляет админ со своего аккаунта:
  * бот присылает ему список победителей с @username.
@@ -69,7 +69,7 @@ export function nextDrawAt(kind, now = new Date()) {
   }
   let at = new Date(Date.UTC(y, m, day, DRAW_HOUR) - MSK_OFFSET_MS);
   if (at <= now) {
-    // сегодняшние итоги уже прошли — следующий раз
+    // сегодняшние итоги уже прошли - следующий раз
     if (kind === 'week') at = new Date(at.getTime() + 7 * 86400000);
     else at = new Date(Date.UTC(y, m + 2, 0, DRAW_HOUR) - MSK_OFFSET_MS);
   }
@@ -80,7 +80,7 @@ export function nextDrawAt(kind, now = new Date()) {
 function periodKey(kind, now = new Date()) {
   const t = mskNow(now);
   if (kind === 'month') return `month-${t.y}-${String(t.m + 1).padStart(2, '0')}`;
-  return `week-${t.dateStr}`; // в воскресенье — дата этого воскресенья
+  return `week-${t.dateStr}`; // в воскресенье - дата этого воскресенья
 }
 
 // ---------- База ----------
@@ -112,7 +112,7 @@ const HONEST_DAYS_SQL = `
     AND created_at <= (date + 2)::timestamp
     AND created_at >= date::timestamp - interval '12 hours'`;
 // Нижняя граница: запись на «завтра», сделанную заранее, в честную серию не берём.
-// 12 часов — запас на часовые пояса (самый восточный в России — UTC+12: его полночь = 12:00 UTC накануне).
+// 12 часов - запас на часовые пояса (самый восточный в России - UTC+12: его полночь = 12:00 UTC накануне).
 
 // Серия дней подряд, которая заканчивается сегодня или вчера (по Москве)
 function streakFromDates(dates, today) {
@@ -149,7 +149,7 @@ export async function giveawayStatus(userId) {
   );
   const lastByKind = Object.fromEntries(last.rows.map((r) => [r.kind, r]));
 
-  // бонусные билеты за приглашённых друзей — только в недельном розыгрыше и только если сам участвуешь
+  // бонусные билеты за приглашённых друзей - только в недельном розыгрыше и только если сам участвуешь
   let refBonus = 0;
   try { refBonus = (await referralStats(userId)).bonus; } catch (e) {}
   const out = { honest_streak: streak, ref_bonus: refBonus };
@@ -201,8 +201,8 @@ function fullName(u) {
 }
 
 /**
- * Провести розыгрыш. force — для тестового запуска админом (не мешает настоящему розыгрышу периода).
- * send(chatId, text) — функция отправки сообщения ботом.
+ * Провести розыгрыш. force - для тестового запуска админом (не мешает настоящему розыгрышу периода).
+ * send(chatId, text) - функция отправки сообщения ботом.
  */
 export async function runDraw(kind, send, { force = false } = {}) {
   await ready;
@@ -235,7 +235,7 @@ export async function runDraw(kind, send, { force = false } = {}) {
     if (Number(userId) === adminUserId) continue;
     const streak = streakFromDates(dates, today);
     const base = tickets(kind, streak);
-    const t = base > 0 ? base + (bonuses[userId] || 0) : 0; // бонус за друзей — только тем, кто сам участвует
+    const t = base > 0 ? base + (bonuses[userId] || 0) : 0; // бонус за друзей - только тем, кто сам участвует
     if (t > 0) entries.push({ user_id: Number(userId), streak, tickets: t });
   }
 
@@ -255,18 +255,18 @@ export async function runDraw(kind, send, { force = false } = {}) {
     [entries.length, JSON.stringify(winners.map(({ telegram_id, ...w }) => w)), drawId]
   );
 
-  // поздравляем победителей (в тестовом запуске — никому не пишем, только админу)
+  // поздравляем победителей (в тестовом запуске - никому не пишем, только админу)
   for (const w of force ? [] : winners) {
     await send(w.telegram_id,
-      `🎉 Поздравляем! Ты выиграл в розыгрыше Forma — «${g.title}» ${g.emoji}\n\n` +
+      `🎉 Поздравляем! Ты выиграл в розыгрыше Forma - «${g.title}» ${g.emoji}\n\n` +
       `Твоя честная серия: ${w.streak} дн. 🔥\nПодарок скоро придёт тебе в Telegram. Так держать! 💪`);
   }
 
-  // список для админа — чтобы отправить подарки
+  // список для админа - чтобы отправить подарки
   if (admin) {
     const list = winners.length
-      ? winners.map((w, i) => `${i + 1}. ${fullName(w)}${w.username ? ' @' + w.username : ''} — серия ${w.streak} дн., билетов ${w.tickets}`).join('\n')
-      : 'Участников пока нет — никто не набрал нужную серию.';
+      ? winners.map((w, i) => `${i + 1}. ${fullName(w)}${w.username ? ' @' + w.username : ''} - серия ${w.streak} дн., билетов ${w.tickets}`).join('\n')
+      : 'Участников пока нет - никто не набрал нужную серию.';
     await send(admin,
       `${g.emoji} Итоги: ${g.title}${force ? ' (тестовый запуск)' : ''}\n` +
       `Участников: ${entries.length}\n\n${list}\n\n` +
