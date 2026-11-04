@@ -5,10 +5,10 @@ import { query, dbReady } from './db.js';
  * Группы (команды и тренерские) и приглашения друзей.
  *
  *  Группа-команда: участники видят открытые тренировки друг друга в общей ленте и рейтинг недели.
- *  Тренерская группа: тренер (создатель) дополнительно видит ВСЕ записи участников — и закрытые тоже,
+ *  Тренерская группа: тренер (создатель) дополнительно видит ВСЕ записи участников - и закрытые тоже,
  *  может ставить реакции и комментировать. Об этом спортсмен предупреждён при вступлении и может выйти.
  *
- *  Приглашения: у каждого своя ссылка t.me/<бот>?start=r_<код>. Кто пришёл по ней — сразу в друзьях.
+ *  Приглашения: у каждого своя ссылка t.me/<бот>?start=r_<код>. Кто пришёл по ней - сразу в друзьях.
  *  Когда приглашённый запишет 3 тренировки, пригласивший получает +1 билет в недельный розыгрыш (максимум +3).
  */
 
@@ -71,14 +71,14 @@ export const socialReady = (async () => {
       created_at TIMESTAMP DEFAULT now()
     )`);
     await query(`CREATE INDEX IF NOT EXISTS idx_goals_user_month ON goals(user_id, month)`);
-    // Вес по датам — чтобы видеть, как идёт цель «похудеть / набрать массу»
+    // Вес по датам - чтобы видеть, как идёт цель «похудеть / набрать массу»
     await query(`CREATE TABLE IF NOT EXISTS weight_log (
       user_id INT REFERENCES users(id) ON DELETE CASCADE,
       date DATE NOT NULL,
       kg NUMERIC NOT NULL,
       PRIMARY KEY (user_id, date)
     )`);
-    // видят ли друзья блок «Личные рекорды» в профиле (по умолчанию — да, выключается в «Приватности»)
+    // видят ли друзья блок «Личные рекорды» в профиле (по умолчанию - да, выключается в «Приватности»)
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS show_records BOOLEAN DEFAULT TRUE`);
     // случайный код приглашения человека (раньше код считался из номера в базе и легко угадывался)
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_token TEXT`);
@@ -95,7 +95,7 @@ export const socialReady = (async () => {
   } catch (err) {
     console.error('Social tables failed:', err.message);
   }
-  // Видимость записи теперь бывает ещё и 'custom' (выбранные друзья) — расширяем проверку в базе
+  // Видимость записи теперь бывает ещё и 'custom' (выбранные друзья) - расширяем проверку в базе
   try {
     await query(`DO $$ BEGIN
       ALTER TABLE workouts DROP CONSTRAINT IF EXISTS workouts_visibility_check;
@@ -108,7 +108,7 @@ export const socialReady = (async () => {
 
 // ---------- Коды ----------
 // Код приглашения человека: случайные 16 символов (0-9, a-f), хранятся в users.ref_token.
-// Раньше код считался по формуле из номера в базе — по любой ссылке можно было вычислить
+// Раньше код считался по формуле из номера в базе - по любой ссылке можно было вычислить
 // код любого человека и «подружиться» с ним без подтверждения.
 // Старые ссылки-приглашения перестают работать (ищем только по новому коду).
 export async function getRefCode(userId) {
@@ -121,11 +121,11 @@ export async function getRefCode(userId) {
       const r = await query(
         'UPDATE users SET ref_token = $1 WHERE id = $2 AND ref_token IS NULL RETURNING ref_token', [token, userId]);
       if (r.rows[0]) return r.rows[0].ref_token;
-      // кто-то успел раньше (два запроса одновременно) — берём уже записанный
+      // кто-то успел раньше (два запроса одновременно) - берём уже записанный
       const again = await query('SELECT ref_token FROM users WHERE id = $1', [userId]);
       if (again.rows[0]?.ref_token) return again.rows[0].ref_token;
     } catch (err) {
-      if (err.code !== '23505') throw err; // 23505 — такой код уже занят, пробуем другой
+      if (err.code !== '23505') throw err; // 23505 - такой код уже занят, пробуем другой
     }
   }
   throw new Error('Не удалось создать код приглашения');
@@ -139,7 +139,7 @@ export function newGroupCode() {
 }
 
 // ---------- Тренер ----------
-// Тренер ли coachId для спортсмена athleteId (есть общая тренерская группа, где coachId — создатель)
+// Тренер ли coachId для спортсмена athleteId (есть общая тренерская группа, где coachId - создатель)
 export async function isCoachOf(coachId, athleteId) {
   if (!coachId || !athleteId || coachId === athleteId) return false;
   await socialReady;
@@ -170,7 +170,7 @@ export async function rememberReferral(inviteeTg, payload) {
   const inviter = await query('SELECT id, telegram_id FROM users WHERE ref_token = $1', [m[1].toLowerCase()]);
   if (!inviter.rows[0] || String(inviter.rows[0].telegram_id) === String(inviteeTg)) return false;
   const inviterId = inviter.rows[0].id;
-  // уже пользуется Forma — это не новый человек
+  // уже пользуется Forma - это не новый человек
   const existing = await query('SELECT id FROM users WHERE telegram_id = $1', [inviteeTg]);
   if (existing.rows[0]) return false;
   await query(
@@ -180,7 +180,7 @@ export async function rememberReferral(inviteeTg, payload) {
   return true;
 }
 
-// При входе в приложение: если человек пришёл по приглашению — сразу дружим с пригласившим.
+// При входе в приложение: если человек пришёл по приглашению - сразу дружим с пригласившим.
 // Возвращает пригласившего (чтобы уведомить его), либо null.
 export async function settleReferral(user) {
   await socialReady;
@@ -244,7 +244,7 @@ export async function canSeeCustom(meId, workoutId) {
 }
 
 // ---------- Рекорды, внесённые вручную ----------
-// Возвращаем их в том же виде, что и записи-старты, — чтобы считать лучший результат одной функцией.
+// Возвращаем их в том же виде, что и записи-старты, - чтобы считать лучший результат одной функцией.
 // Рекорд без даты считаем «давним» (1900-01-01): он был до всех стартов в дневнике.
 export async function manualRecordsAsStarts(userIds) {
   if (!userIds.length) return {};
