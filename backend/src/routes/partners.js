@@ -8,8 +8,8 @@ import { requireTelegramAuth } from '../telegramAuth.js';
  *  - Человек создаёт приглашение: город, дата и время, место, что бежим («10 км по 4:30»).
  *  - Все бегуны этого города видят его в разделе «Пробежки», жмут «Иду».
  *  - У каждой пробежки свой чат, чтобы договориться (писать может любой, кто её открыл).
- *  - Автор может отменить пробежку; на неприличное можно пожаловаться — жалоба придёт админу в бота.
- *  - Бот сообщает автору, что кто-то идёт, и участникам — о новых сообщениях (не чаще раза в 10 минут
+ *  - Автор может отменить пробежку; на неприличное можно пожаловаться - жалоба придёт админу в бота.
+ *  - Бот сообщает автору, что кто-то идёт, и участникам - о новых сообщениях (не чаще раза в 10 минут
  *    на одну пробежку) и об отмене. Всё это выключается в «Настройках».
  */
 
@@ -141,7 +141,7 @@ async function getRun(id) {
 }
 
 // ===================================================================
-//  GET /api/partners?city=Москва — ближайшие пробежки в городе (и мой город)
+//  GET /api/partners?city=Москва - ближайшие пробежки в городе (и мой город)
 // ===================================================================
 router.get('/', async (req, res) => {
   const city = cleanCity(req.query.city) || req.me.city || null;
@@ -162,7 +162,7 @@ router.get('/', async (req, res) => {
          ORDER BY r.date, r.time
          LIMIT 50`, [city, today, req.me.id])
       : { rows: [] },
-    // города, где сейчас есть пробежки, — подсказки для выбора
+    // города, где сейчас есть пробежки, - подсказки для выбора
     query(
       `SELECT min(city) AS city, count(*)::int AS n FROM runs WHERE date >= $1::date
        GROUP BY lower(city) ORDER BY n DESC LIMIT 12`, [today]),
@@ -180,7 +180,7 @@ router.get('/', async (req, res) => {
   });
 });
 
-// PUT /api/partners/city { city } — мой город
+// PUT /api/partners/city { city } - мой город
 router.put('/city', async (req, res) => {
   const city = cleanCity(req.body.city);
   if (!city) return res.status(400).json({ error: 'Напиши свой город' });
@@ -188,7 +188,7 @@ router.put('/city', async (req, res) => {
   res.json({ ok: true, city });
 });
 
-// POST /api/partners { city, date, time, place, description, max_people } — позвать на пробежку
+// POST /api/partners { city, date, time, place, description, max_people } - позвать на пробежку
 router.post('/', async (req, res) => {
   const b = req.body || {};
   const city = cleanCity(b.city) || req.me.city;
@@ -205,7 +205,7 @@ router.post('/', async (req, res) => {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return res.status(400).json({ error: 'Укажи время, например 07:30' });
   if (!place) return res.status(400).json({ error: 'Напиши, где встречаемся' });
   const active = await query('SELECT count(*)::int AS n FROM runs WHERE author_id = $1 AND date >= $2::date', [req.me.id, today]);
-  if (active.rows[0].n >= 5) return res.status(400).json({ error: 'У тебя уже 5 запланированных пробежек — это максимум' });
+  if (active.rows[0].n >= 5) return res.status(400).json({ error: 'У тебя уже 5 запланированных пробежек - это максимум' });
 
   const r = await query(
     `INSERT INTO runs (author_id, city, date, time, place, description, max_people)
@@ -217,7 +217,7 @@ router.post('/', async (req, res) => {
   res.json({ ok: true, id });
 });
 
-// GET /api/partners/:id — пробежка целиком: участники и чат
+// GET /api/partners/:id - пробежка целиком: участники и чат
 router.get('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const run = id && (await getRun(id));
@@ -239,12 +239,12 @@ router.get('/:id', async (req, res) => {
       joined: members.rows.some((m) => m.id === req.me.id),
     },
     members: members.rows,
-    // Чат видят только те, кто идёт на пробежку (автор — тоже участник); остальные видят только саму пробежку
+    // Чат видят только те, кто идёт на пробежку (автор - тоже участник); остальные видят только саму пробежку
     messages: !members.rows.some((m) => m.id === req.me.id) ? [] : messages.rows.reverse().map((m) => ({ ...m, author: wById[m.user_id] || null, mine: m.user_id === req.me.id })),
   });
 });
 
-// POST /api/partners/:id/join — «Иду»
+// POST /api/partners/:id/join - «Иду»
 router.post('/:id/join', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const run = id && (await getRun(id));
@@ -253,38 +253,38 @@ router.post('/:id/join', async (req, res) => {
   const ins = await query(
     'INSERT INTO run_members (run_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING user_id', [id, req.me.id]);
   if (ins.rows.length && run.author_id !== req.me.id) {
-    botSend([run.author_id], `🏃 ${fullName(req.me)} идёт на твою пробежку ${whenLabel(run.date, run.time)} — ${run.place}`, id);
+    botSend([run.author_id], `🏃 ${fullName(req.me)} идёт на твою пробежку ${whenLabel(run.date, run.time)} - ${run.place}`, id);
   }
   res.json({ ok: true });
 });
 
-// POST /api/partners/:id/leave — «Не пойду»
+// POST /api/partners/:id/leave - «Не пойду»
 router.post('/:id/leave', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const run = id && (await getRun(id));
   if (!run) return res.status(404).json({ error: 'Пробежка не найдена' });
-  if (run.author_id === req.me.id) return res.status(400).json({ error: 'Ты автор — пробежку можно только отменить' });
+  if (run.author_id === req.me.id) return res.status(400).json({ error: 'Ты автор - пробежку можно только отменить' });
   await query('DELETE FROM run_members WHERE run_id = $1 AND user_id = $2', [id, req.me.id]);
   res.json({ ok: true });
 });
 
-// POST /api/partners/:id/messages { text } — написать в чат пробежки
+// POST /api/partners/:id/messages { text } - написать в чат пробежки
 const lastMsgAt = new Map();
 router.post('/:id/messages', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const msg = String(req.body.text ?? '').trim().slice(0, 500);
   if (!msg) return res.status(400).json({ error: 'Пустое сообщение' });
   const now = Date.now();
-  if (now - (lastMsgAt.get(req.me.id) || 0) < 1500) return res.status(429).json({ error: 'Слишком быстро — подожди секунду' });
+  if (now - (lastMsgAt.get(req.me.id) || 0) < 1500) return res.status(429).json({ error: 'Слишком быстро - подожди секунду' });
   lastMsgAt.set(req.me.id, now);
   const run = id && (await getRun(id));
   if (!run) return res.status(404).json({ error: 'Пробежка не найдена или отменена' });
   const isMember = await query('SELECT 1 FROM run_members WHERE run_id = $1 AND user_id = $2', [id, req.me.id]);
-  if (!isMember.rows.length) return res.status(403).json({ error: 'Писать в чат могут только те, кто идёт на пробежку — нажми «Иду»' });
+  if (!isMember.rows.length) return res.status(403).json({ error: 'Писать в чат могут только те, кто идёт на пробежку - нажми «Иду»' });
   const r = await query(
     'INSERT INTO run_messages (run_id, user_id, text) VALUES ($1, $2, $3) RETURNING id, text, created_at, user_id', [id, req.me.id, msg]);
 
-  // участникам (кроме автора сообщения) — не чаще раза в 10 минут на пробежку
+  // участникам (кроме автора сообщения) - не чаще раза в 10 минут на пробежку
   if (now - (lastChatPing.get(id) || 0) > 10 * 60 * 1000) {
     lastChatPing.set(id, now);
     const members = await query('SELECT user_id FROM run_members WHERE run_id = $1 AND user_id <> $2', [id, req.me.id]);
@@ -294,7 +294,7 @@ router.post('/:id/messages', async (req, res) => {
   res.json({ message: { ...r.rows[0], mine: true, author: null } });
 });
 
-// DELETE /api/partners/:id — автор отменяет пробежку
+// DELETE /api/partners/:id - автор отменяет пробежку
 router.delete('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const run = id && (await getRun(id));
@@ -305,7 +305,7 @@ router.delete('/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/partners/:id/report { reason } — пожаловаться (придёт админу в бота)
+// POST /api/partners/:id/report { reason } - пожаловаться (придёт админу в бота)
 const lastReport = new Map();
 router.post('/:id/report', async (req, res) => {
   const id = parseInt(req.params.id, 10);
