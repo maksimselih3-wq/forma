@@ -6,13 +6,13 @@ import { sendCoachDigests } from './routes/coach.js';
  * Вечернее напоминание от бота.
  *
  * Каждый вечер в 21:00 по Москве бот пишет тем, у кого за сегодня ещё нет записи
- * (ни тренировки, ни дня отдыха). Если запись есть — молчит.
+ * (ни тренировки, ни дня отдыха). Если запись есть - молчит.
  *
  *  - Отключается в профиле приложения (переключатель «Напоминать вечером»).
- *  - Одному человеку — не больше одного напоминания в день.
+ *  - Одному человеку - не больше одного напоминания в день.
  *  - Не пишем тем, кто давно забросил дневник (больше 14 дней без записей),
  *    чтобы бот не превращался в спам. Новичкам пишем первую неделю после регистрации.
- *  - Если человек заблокировал бота — выключаем ему напоминания.
+ *  - Если человек заблокировал бота - выключаем ему напоминания.
  */
 
 const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
@@ -51,7 +51,7 @@ export const remindersReady = (async () => {
   }
 })();
 
-// Итоги недели и уведомления о совместных пробежках — включить/выключить
+// Итоги недели и уведомления о совместных пробежках - включить/выключить
 export async function setNotifyPrefs(telegramId, { digest, partners } = {}) {
   await remindersReady;
   if (typeof digest === 'boolean') await query('UPDATE users SET digest_enabled = $1 WHERE telegram_id = $2', [digest, telegramId]);
@@ -76,18 +76,18 @@ export function reminderText(u, today) {
   const streak = Number(u.current_streak) || 0;
   const tail = '\n\n<i>Отключить напоминания можно в профиле приложения.</i>';
 
-  // вчера запись была — серия жива, но сегодня ещё пусто
+  // вчера запись была - серия жива, но сегодня ещё пусто
   if (last === addDaysStr(today, -1) && streak > 0) {
-    return `🔥 Серия ${streak} ${daysWord(streak)} — не дай ей прерваться!\n\n` +
-      'За сегодня ещё нет записи. Запиши тренировку или день отдыха — это минута.' + tail;
+    return `🔥 Серия ${streak} ${daysWord(streak)} - не дай ей прерваться!\n\n` +
+      'За сегодня ещё нет записи. Запиши тренировку или день отдыха - это минута.' + tail;
   }
   return `Как прошёл день${name}? 💪\n\n` +
-    'Запиши тренировку или день отдыха — это займёт минуту, а Fom посмотрит, как ты восстанавливаешься.' + tail;
+    'Запиши тренировку или день отдыха - это займёт минуту, а Fom посмотрит, как ты восстанавливаешься.' + tail;
 }
 
 /**
  * Разослать напоминания за сегодня. send(chatId, html) должна вернуть ответ Telegram ({ ok, description }).
- * force — для проверки админом: не смотрит на время.
+ * force - для проверки админом: не смотрит на время.
  */
 export async function sendReminders(send, { force = false } = {}) {
   await remindersReady;
@@ -108,7 +108,7 @@ export async function sendReminders(send, { force = false } = {}) {
   let sent = 0;
   for (const u of r.rows) {
     const last = u.last_date ? String(u.last_date).slice(0, 10) : null;
-    // давно забросил дневник — не беспокоим
+    // давно забросил дневник - не беспокоим
     if (last && last < addDaysStr(today, -14)) continue;
 
     // «занимаем» человека на сегодня, чтобы при двух запусках не написать дважды
@@ -124,7 +124,7 @@ export async function sendReminders(send, { force = false } = {}) {
     const res = await send(u.telegram_id, reminderText(u, today));
     if (res?.ok) sent++;
     else if (/blocked|deactivated|not found|initiate/i.test(res?.description || '')) {
-      // бот заблокирован или человек не открывал чат с ботом — больше не пытаемся
+      // бот заблокирован или человек не открывал чат с ботом - больше не пытаемся
       await query('UPDATE users SET remind_enabled = FALSE WHERE id = $1', [u.id]);
     }
     await new Promise((ok) => setTimeout(ok, 60)); // Telegram не любит больше ~30 сообщений в секунду
