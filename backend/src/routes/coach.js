@@ -7,16 +7,16 @@ import { socialReady } from '../social.js';
 import { takeQuota, refundQuota, QUOTA_MESSAGES } from '../aiQuota.js';
 
 /**
- * Кабинет тренера — надстройка над тренерской группой (groups.coach_mode = true).
+ * Кабинет тренера - надстройка над тренерской группой (groups.coach_mode = true).
  * Видит его только создатель группы; спортсмены при вступлении соглашаются, что тренер видит их записи.
  *
- *  GET  /api/coach/groups/:id                      — команда: сводные цифры, спортсмены с пометками
+ *  GET  /api/coach/groups/:id                      - команда: сводные цифры, спортсмены с пометками
  *  GET  /api/coach/groups/:id/members/:uid         —x спортсмен: неделя по дням, цифры, вывод Fom (если уже был)
- *  POST /api/coach/groups/:id/members/:uid/fom     — попросить Fom написать вывод для тренера
- *  POST /api/coach/groups/:id/members/:uid/message — написать спортсмену (придёт от бота)
- *  GET  /api/coach/groups/:id/digest               — сводка недели от Fom по группе
- *  POST /api/coach/groups/:id/task                 — задание всей группе (бот + карточка в группе)
- *  GET  /api/coach/groups/:id/task                 — последнее задание (видят все участники)
+ *  POST /api/coach/groups/:id/members/:uid/fom     - попросить Fom написать вывод для тренера
+ *  POST /api/coach/groups/:id/members/:uid/message - написать спортсмену (придёт от бота)
+ *  GET  /api/coach/groups/:id/digest               - сводка недели от Fom по группе
+ *  POST /api/coach/groups/:id/task                 - задание всей группе (бот + карточка в группе)
+ *  GET  /api/coach/groups/:id/task                 - последнее задание (видят все участники)
  */
 const router = Router();
 const safe = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -113,7 +113,7 @@ async function loadMe(req, res, next) {
 }
 router.use(requireTelegramAuth, safe(loadMe));
 
-// Группа, где я тренер (создатель тренерской группы) — иначе null
+// Группа, где я тренер (создатель тренерской группы) - иначе null
 async function coachGroup(gid, meId) {
   await coachReady;
   gid = parseInt(gid, 10);
@@ -123,7 +123,7 @@ async function coachGroup(gid, meId) {
 }
 
 /**
- * Цифры по спортсменам группы за текущую неделю (пн — сегодня) и пометки для тренера.
+ * Цифры по спортсменам группы за текущую неделю (пн - сегодня) и пометки для тренера.
  * Одна выборка на всех: записи за 3 недели, последняя запись, утренние отметки за 7 дней.
  */
 async function teamStats(ids, today) {
@@ -166,7 +166,7 @@ async function teamStats(ids, today) {
     };
     const lw = all[0];
     if (lw) s.last = { date: day(lw), text: shortWorkout(lw), rpe: lw.rpe, start_time: lw.start_time, place: lw.place, altitude_m: lw.altitude_m };
-    // сбор: последняя тренировка не старше 3 дней — на высоте от 1000 м (или отмечена «сбор»)
+    // сбор: последняя тренировка не старше 3 дней - на высоте от 1000 м (или отмечена «сбор»)
     const lt = tr[0];
     if (lt && diffDays(today, day(lt)) <= 3 && (Number(lt.altitude_m) >= HIGH_M || lt.camp)) {
       let first = day(lt);
@@ -202,7 +202,7 @@ async function groupAthletes(g) {
   return r.rows;
 }
 
-// Строка фактов по спортсмену — для Fom
+// Строка фактов по спортсмену - для Fom
 function factsLine(name, s) {
   const bits = [
     `${s.trainings} трен., ${fmt(s.week_km)} км (прошлая неделя за те же дни ${fmt(s.prev_km)} км, вся прошлая ${fmt(s.prev_full_km)} км)`,
@@ -211,7 +211,7 @@ function factsLine(name, s) {
     s.heavy7 && `тяжёлых (RPE 8+) за 7 дней: ${s.heavy7}`,
     s.sleep_avg != null && `сон ср. ${fmt(s.sleep_avg)} ч`,
     s.days_since != null ? `последняя запись ${s.days_since === 0 ? 'сегодня' : s.days_since + ' дн. назад'}` : 'записей нет',
-    s.camp && `на сборе${s.camp.place ? ' — ' + s.camp.place : ''}${s.camp.altitude_m ? `, ≈${s.camp.altitude_m} м` : ''}, ${s.camp.day}-й день`,
+    s.camp && `на сборе${s.camp.place ? ' - ' + s.camp.place : ''}${s.camp.altitude_m ? `, ≈${s.camp.altitude_m} м` : ''}, ${s.camp.day}-й день`,
   ].filter(Boolean);
   const flags = s.flags.filter((x) => x.kind !== 'ok').map((x) => x.label);
   return `${name}: ${bits.join('; ')}${flags.length ? `. Флаги: ${flags.join(', ')}` : ''}`;
@@ -220,7 +220,7 @@ function factsLine(name, s) {
 // ---------- Команда ----------
 router.get('/groups/:id', async (req, res) => {
   const g = await coachGroup(req.params.id, req.me.id);
-  if (!g) return res.status(403).json({ error: 'Кабинет — только для тренера группы' });
+  if (!g) return res.status(403).json({ error: 'Кабинет - только для тренера группы' });
   const today = getClientToday(req);
   const athletes = await groupAthletes(g);
   const { monday, byId } = await teamStats(athletes.map((a) => a.id), today);
@@ -302,7 +302,7 @@ router.post('/groups/:id/members/:uid/fom', async (req, res) => {
   } catch (err) {
     console.error('Coach summary failed:', err.message);
     await refundQuota(req.me.id, 'coach').catch(() => {});
-    res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
+    res.status(502).json({ error: 'Fom сейчас не ответил - попробуй через минуту' });
   }
 });
 
@@ -324,7 +324,7 @@ async function buildDigest(g, today) {
   const { monday, byId } = await teamStats(athletes.map((a) => a.id), today);
   const lines = athletes.map((a) => factsLine(displayName(a), byId[a.id]));
   const list = Object.values(byId);
-  const totals = `${athletes.length} спортсменов, ${fmt(r1(list.reduce((s, x) => s + x.week_km, 0)))} км, ${list.reduce((s, x) => s + x.trainings, 0)} тренировок; прошлая неделя за те же дни — ${fmt(r1(list.reduce((s, x) => s + x.prev_km, 0)))} км`;
+  const totals = `${athletes.length} спортсменов, ${fmt(r1(list.reduce((s, x) => s + x.week_km, 0)))} км, ${list.reduce((s, x) => s + x.trainings, 0)} тренировок; прошлая неделя за те же дни - ${fmt(r1(list.reduce((s, x) => s + x.prev_km, 0)))} км`;
   const weekLabel = `неделю ${monday.slice(8, 10)}.${monday.slice(5, 7)} – ${today.slice(8, 10)}.${today.slice(5, 7)}`;
   return getCoachTeamDigest(g.name, weekLabel, lines, totals);
 }
@@ -348,7 +348,7 @@ router.get('/groups/:id/digest', async (req, res) => {
   } catch (err) {
     console.error('Coach digest failed:', err.message);
     await refundQuota(req.me.id, 'coach').catch(() => {});
-    res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
+    res.status(502).json({ error: 'Fom сейчас не ответил - попробуй через минуту' });
   }
 });
 
@@ -358,21 +358,21 @@ router.post('/groups/:id/task', async (req, res) => {
   if (!g) return res.status(403).json({ error: 'Только для тренера группы' });
   const text = String(req.body.text || '').trim().slice(0, 1500);
   if (!text) return res.status(400).json({ error: 'Напиши задание' });
-  // не чаще раза в минуту — чтобы случайно не разослать дважды
+  // не чаще раза в минуту - чтобы случайно не разослать дважды
   const recent = await query(`SELECT 1 FROM coach_messages WHERE group_id = $1 AND athlete_id IS NULL AND created_at > now() - interval '1 minute'`, [g.id]);
-  if (recent.rows.length) return res.status(429).json({ error: 'Задание только что отправлено — подожди минуту' });
+  if (recent.rows.length) return res.status(429).json({ error: 'Задание только что отправлено - подожди минуту' });
   await query('INSERT INTO coach_messages (group_id, coach_id, athlete_id, text) VALUES ($1, $2, NULL, $3)', [g.id, req.me.id, text]);
   const athletes = await groupAthletes(g);
   let delivered = 0;
   for (const a of athletes) {
-    const r = await tgSend(a.telegram_id, `📋 Задание от тренера — ${g.name}:\n\n${text}`);
+    const r = await tgSend(a.telegram_id, `📋 Задание от тренера - ${g.name}:\n\n${text}`);
     if (r?.ok) delivered++;
     await new Promise((ok) => setTimeout(ok, 60));
   }
   res.json({ ok: true, delivered, total: athletes.length });
 });
 
-// Последнее задание за 7 дней — видят все участники группы
+// Последнее задание за 7 дней - видят все участники группы
 router.get('/groups/:id/task', async (req, res) => {
   await coachReady;
   const gid = parseInt(req.params.id, 10);
@@ -403,7 +403,7 @@ export async function sendCoachDigests(send, { force = false } = {}) {
       const text = await buildDigest(g, today);
       if (!text) continue;
       await query(`INSERT INTO coach_digests (group_id, day, text) VALUES ($1, $2, $3) ON CONFLICT (group_id, day) DO UPDATE SET text = EXCLUDED.text`, [g.id, today, text]);
-      const r = await send(g.coach_tg, `📋 <b>Сводка недели — ${escHtml(g.name)}</b>\n\n${escHtml(text)}`);
+      const r = await send(g.coach_tg, `📋 <b>Сводка недели - ${escHtml(g.name)}</b>\n\n${escHtml(text)}`);
       if (r?.ok) sent++;
     } catch (err) {
       console.error('Coach digest failed for group', g.id, err.message);
