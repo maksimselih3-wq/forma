@@ -35,10 +35,10 @@ export function validateInitData(initData) {
 
     // сравнение «за одинаковое время», чтобы подпись нельзя было подобрать по скорости ответа
     if (!crypto.timingSafeEqual(Buffer.from(computedHash, 'hex'), Buffer.from(hash, 'hex'))) {
-      return null; // подпись не сошлась — запрос не от Telegram
+      return null; // подпись не сошлась - запрос не от Telegram
     }
 
-    // подпись слишком старая — просим открыть приложение заново
+    // подпись слишком старая - просим открыть приложение заново
     const authDate = Number(params.get('auth_date'));
     if (!authDate || Date.now() / 1000 - authDate > MAX_AGE_SEC) return null;
 
@@ -54,7 +54,7 @@ export function validateInitData(initData) {
 
 /**
  * Кто делает запрос: подпись Telegram (initData) или, если приложение открыто вне Telegram, ключ сессии
- * (см. webAuth.js). Принимает «сырое» значение — заголовок или параметр ?auth= у картинок.
+ * (см. webAuth.js). Принимает «сырое» значение - заголовок или параметр ?auth= у картинок.
  */
 export async function resolveAuth(raw) {
   raw = String(raw || '');
