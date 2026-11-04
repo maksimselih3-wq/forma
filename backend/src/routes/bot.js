@@ -21,13 +21,13 @@ const router = Router();
 const BOT_TOKEN = process.env.BOT_TOKEN;
 // Telegram принимает в секрете только латиницу, цифры, _ и -. Чтобы не зависеть от того,
 // что именно вписано в Railway (пробелы, переносы, другие символы), превращаем значение
-// в надёжный «отпечаток» из букв и цифр — его и отдаём Telegram, и с ним же сверяем.
+// в надёжный «отпечаток» из букв и цифр - его и отдаём Telegram, и с ним же сверяем.
 const RAW_SECRET = (process.env.BOT_WEBHOOK_SECRET || '').trim();
 const WEBHOOK_SECRET = RAW_SECRET ? crypto.createHash('sha256').update(RAW_SECRET).digest('hex') : '';
 const APP_URL = process.env.APP_URL || 'https://maksimselih3-wq.github.io/forma-2/';
 const SERVER_URL = process.env.SERVER_URL || 'https://forma-production-9c7a.up.railway.app';
 // Адрес для ссылок, которые открывает человек (картинка для истории, файл выгрузки).
-// Если приложение работает через свой домен в России — ссылки ведут туда, иначе на Railway.
+// Если приложение работает через свой домен в России - ссылки ведут туда, иначе на Railway.
 const PUBLIC_URL = (process.env.PUBLIC_URL || SERVER_URL).replace(/\/+$/, '');
 // Картинка приветствия лежит рядом с приложением на GitHub Pages
 const WELCOME_IMAGE = new URL('bot/welcome.png', APP_URL).toString();
@@ -52,7 +52,7 @@ async function tg(method, body) {
   }
 }
 
-// ---------- Оформление бота: выполняется при каждом запуске сервера (повторно — безопасно) ----------
+// ---------- Оформление бота: выполняется при каждом запуске сервера (повторно - безопасно) ----------
 async function configureBot() {
   if (!BOT_TOKEN) return;
 
@@ -64,8 +64,8 @@ async function configureBot() {
   // Текст в пустом чате до нажатия «Старт» (до 512 символов)
   await tg('setMyDescription', {
     description:
-      'Forma — дневник тренировок с помощником Fom.\n\n' +
-      '📝 Записывай тренировку за минуту — можно просто своими словами\n' +
+      'Forma - дневник тренировок с помощником Fom.\n\n' +
+      '📝 Записывай тренировку за минуту - можно просто своими словами\n' +
       '❤️ Пульс, нагрузка, самочувствие, силовая и ОФП\n' +
       '🤖 Fom считает объём и замечает перегруз\n' +
       '🔥 Серии, календарь, друзья и реакции\n\n' +
@@ -86,7 +86,7 @@ async function configureBot() {
     ],
   });
 
-  // Кнопка слева от поля ввода — сразу открывает приложение
+  // Кнопка слева от поля ввода - сразу открывает приложение
   await tg('setChatMenuButton', {
     menu_button: { type: 'web_app', text: 'Forma', web_app: { url: APP_URL } },
   });
@@ -99,9 +99,9 @@ async function configureBot() {
       allowed_updates: ['message', 'callback_query'],
       drop_pending_updates: true,
     });
-    if (hook?.ok) console.log('Webhook OK — бот отвечает на /start');
+    if (hook?.ok) console.log('Webhook OK - бот отвечает на /start');
   } else {
-    console.log('BOT_WEBHOOK_SECRET не задан — бот не будет отвечать на /start');
+    console.log('BOT_WEBHOOK_SECRET не задан - бот не будет отвечать на /start');
   }
   console.log('Bot configured');
 }
@@ -112,7 +112,7 @@ const sendText = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, re
 startGiveawayScheduler(sendText);
 
 // Вечернее напоминание: в 21:00 (МСК), если за сегодня ещё нет записи
-// Сначала push в приложение; если у человека его нет или доставка не вышла — обычное сообщение бота
+// Сначала push в приложение; если у человека его нет или доставка не вышла - обычное сообщение бота
 const sendTgHtml = (chatId, text) => tg('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
 const sendHtml = async (chatId, text) => {
   try { if (await sendPush(chatId, plainPush(text)) > 0) return { ok: true }; } catch (e) { /* уйдёт в Telegram */ }
@@ -147,12 +147,12 @@ export async function buildStats() {
        count(*) FILTER (WHERE date >= $1::date - 6 AND competition IS NOT NULL)::int AS comps7,
        count(*)::int AS entries_total
      FROM workouts`, [today]);
-  // Удержание: кто пришёл 7–13 дней назад — сколько из них записывали что-то за последние 7 дней
+  // Удержание: кто пришёл 7–13 дней назад - сколько из них записывали что-то за последние 7 дней
   const r1 = await safeQ(
     `SELECT count(*)::int AS cohort,
        count(*) FILTER (WHERE EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = u.id AND w.date >= $1::date - 6))::int AS back
      FROM users u WHERE u.created_at >= $1::date - 13 AND u.created_at < $1::date - 6`, [today]);
-  // Кто с нами 2+ недели — сколько активны на этой неделе
+  // Кто с нами 2+ недели - сколько активны на этой неделе
   const r2 = await safeQ(
     `SELECT count(*)::int AS cohort,
        count(*) FILTER (WHERE EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = u.id AND w.date >= $1::date - 6))::int AS back
@@ -199,11 +199,11 @@ export async function buildStats() {
     `👥 Групп: ${g.groups ?? 0} (тренерских ${g.coach ?? 0}), в группах ${gm.n ?? 0} чел. · пришли по приглашению: ${ref.n ?? 0}`,
     `🔔 Напоминания включены у ${rem.on ?? 0}`,
   ];
-  if (top.length) lines.push('', '🔥 <b>Самые длинные серии:</b>', ...top.map((x, i) => `${i + 1}. ${name(x)} — ${x.current_streak} дн.`));
+  if (top.length) lines.push('', '🔥 <b>Самые длинные серии:</b>', ...top.map((x, i) => `${i + 1}. ${name(x)} - ${x.current_streak} дн.`));
   return lines.join('\n');
 }
 
-// Отчёт тебе каждый понедельник в 9:00 (МСК) — один раз за неделю
+// Отчёт тебе каждый понедельник в 9:00 (МСК) - один раз за неделю
 async function weeklyAdminReport() {
   const now = new Date(Date.now() + 3 * 3600000);
   if (now.getUTCDay() !== 1 || now.getUTCHours() < 9 || now.getUTCHours() >= 12) return;
@@ -226,8 +226,8 @@ setInterval(weeklyAdminReport, 10 * 60 * 1000);
 function welcomeText(name) {
   return (
     `Привет${name ? ', ' + name : ''}! 👋\n\n` +
-    '<b>Forma</b> — твой дневник тренировок.\n\n' +
-    '📝 Записывай тренировку за минуту — даже своими словами, Fom сам разложит по полям\n' +
+    '<b>Forma</b> - твой дневник тренировок.\n\n' +
+    '📝 Записывай тренировку за минуту - даже своими словами, Fom сам разложит по полям\n' +
     '🤖 Fom считает объём, следит за пульсом и восстановлением\n' +
     '🔥 Держи серию, смотри календарь, добавляй друзей\n\n' +
     'Жми кнопку ниже 👇'
@@ -240,13 +240,13 @@ const HELP_TEXT =
   '• Умный ввод: опиши тренировку своими словами\n' +
   '• Fom: отзыв после тренировки, разбор недели и месяца, чат\n' +
   '• Друзья: лента, реакции, комментарии\n\n' +
-  'Всё внутри приложения — открывай кнопкой ниже или кнопкой «Forma» слева от поля ввода.';
+  'Всё внутри приложения - открывай кнопкой ниже или кнопкой «Forma» слева от поля ввода.';
 
 function escapeHtml(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Нажатия на кнопки под сообщениями бота (сейчас — подтверждение входа)
+// Нажатия на кнопки под сообщениями бота (сейчас - подтверждение входа)
 async function handleCallback(cb) {
   // выбор телефона в рассылке «установка на экран»: показываем нужную инструкцию в том же сообщении
   const hp = /^hp:(ios|and|menu)$/.exec(String(cb.data || ''));
@@ -264,15 +264,15 @@ async function handleCallback(cb) {
   }
   if (m[1] === 'y') {
     const ok = await confirmLogin(m[2], cb.from);
-    await tg('answerCallbackQuery', { callback_query_id: cb.id, text: ok ? 'Готово — возвращайся в Forma' : 'Ссылка устарела' });
+    await tg('answerCallbackQuery', { callback_query_id: cb.id, text: ok ? 'Готово - возвращайся в Forma' : 'Ссылка устарела' });
     await tg('editMessageText', {
       chat_id: chatId, message_id: cb.message.message_id,
-      text: ok ? '✅ Вход подтверждён. Возвращайся в Forma — она уже открывается.' : 'Эта ссылка для входа уже не действует. Нажми «Войти через Telegram» в Forma ещё раз.',
+      text: ok ? '✅ Вход подтверждён. Возвращайся в Forma - она уже открывается.' : 'Эта ссылка для входа уже не действует. Нажми «Войти через Telegram» в Forma ещё раз.',
     });
   } else {
     await denyLogin(m[2]);
     await tg('answerCallbackQuery', { callback_query_id: cb.id, text: 'Вход отклонён' });
-    await tg('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text: '🚫 Вход отклонён. Если это были не ты — ничего больше делать не нужно.' });
+    await tg('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text: '🚫 Вход отклонён. Если это были не ты - ничего больше делать не нужно.' });
   }
 }
 
@@ -283,23 +283,23 @@ const HOME_INTRO = `📲 <b>Forma на экране телефона</b>
 Так приложение открывается на весь экран, как обычное, работает даже когда Telegram не открывается, и не нужен магазин приложений.
 
 Выбери свой телефон 👇`;
-const HOME_IOS = `🍎 <b>iPhone — установка на экран «Домой»</b>
+const HOME_IOS = `🍎 <b>iPhone - установка на экран «Домой»</b>
 
 1. Открой ссылку в <b>Safari</b>:
 ${APP_URL}
-(если она открылась внутри Telegram — нажми значок компаса или «⋯» и выбери «Открыть в Safari»)
+(если она открылась внутри Telegram - нажми значок компаса или «⋯» и выбери «Открыть в Safari»)
 2. Внизу нажми «Поделиться» (квадрат со стрелкой).
 3. Выбери «На экран «Домой»» и нажми «Добавить».
-4. Открой Forma с главного экрана и войди — через Telegram или по почте. Дневник и серия те же.`;
-const HOME_ANDROID = `🤖 <b>Android — установка на главный экран</b>
+4. Открой Forma с главного экрана и войди - через Telegram или по почте. Дневник и серия те же.`;
+const HOME_ANDROID = `🤖 <b>Android - установка на главный экран</b>
 
 1. Открой ссылку в <b>Chrome</b>:
 ${APP_URL}
-(если она открылась внутри Telegram — нажми «⋯» и выбери «Открыть в браузере»)
+(если она открылась внутри Telegram - нажми «⋯» и выбери «Открыть в браузере»)
 2. Нажми «⋯» справа вверху.
 3. Выбери «Установить приложение» (или «Добавить на главный экран») и подтверди.
-4. Открой Forma с главного экрана и войди — через Telegram или по почте. Дневник и серия те же.`;
-const HOME_FOOT = '\n\nЕсли что-то не получилось — просто напиши сюда.';
+4. Открой Forma с главного экрана и войди - через Telegram или по почте. Дневник и серия те же.`;
+const HOME_FOOT = '\n\nЕсли что-то не получилось - просто напиши сюда.';
 const HOME_MENU = { inline_keyboard: [[{ text: '🍎 iPhone', callback_data: 'hp:ios' }, { text: '🤖 Android', callback_data: 'hp:and' }]] };
 const HOME_BACK = { inline_keyboard: [[{ text: '← Выбрать другой телефон', callback_data: 'hp:menu' }]] };
 const IOS_HOME_TEXT = HOME_INTRO; // сообщение рассылки: короткое вступление и выбор телефона
@@ -337,7 +337,7 @@ async function handleMessage(msg) {
     if (g) {
       await tg('sendMessage', {
         chat_id: chatId,
-        text: `👥 Тебя пригласили в группу в Forma!\n\nЖми кнопку — откроется приложение и предложит вступить.`,
+        text: `👥 Тебя пригласили в группу в Forma!\n\nЖми кнопку - откроется приложение и предложит вступить.`,
         reply_markup: { inline_keyboard: [[{ text: '👥 Вступить в группу', web_app: { url: `${APP_URL}?join=${g[1].toLowerCase()}` } }]] },
       });
       return;
@@ -352,7 +352,7 @@ async function handleMessage(msg) {
       }
       await tg('sendMessage', {
         chat_id: chatId,
-        text: '🔐 <b>Вход в Forma</b>\n\nКто-то хочет войти в твой дневник с телефона или сайта. Это ты?\n\nЕсли ты не нажимал «Войти через Telegram» — выбери «Нет, это не я».',
+        text: '🔐 <b>Вход в Forma</b>\n\nКто-то хочет войти в твой дневник с телефона или сайта. Это ты?\n\nЕсли ты не нажимал «Войти через Telegram» - выбери «Нет, это не я».',
         parse_mode: 'HTML',
         reply_markup: { inline_keyboard: [[
           { text: '✅ Да, это я', callback_data: `wl:y:${wl[1]}` },
@@ -370,7 +370,7 @@ async function handleMessage(msg) {
       parse_mode: 'HTML',
       reply_markup: OPEN_BUTTON,
     });
-    // если картинка недоступна — отправляем просто текст
+    // если картинка недоступна - отправляем просто текст
     if (!sent?.ok) {
       await tg('sendMessage', { chat_id: chatId, text: welcomeText(name), parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
     }
@@ -382,7 +382,7 @@ async function handleMessage(msg) {
     const streak = u.rows[0] ? await honestStreak(u.rows[0].id) : 0;
     const lines = Object.entries(GIVEAWAYS).map(([kind, g]) => {
       const ok = streak >= g.minStreak;
-      return `${g.emoji} <b>${g.title}</b> — ${g.prize}\n` +
+      return `${g.emoji} <b>${g.title}</b> - ${g.prize}\n` +
         `Нужна честная серия от ${g.minStreak} дн. · итоги ${mskDateLabel(nextDrawAt(kind))} (МСК)\n` +
         (ok ? '✅ Ты участвуешь!' : `Ещё ${g.minStreak - streak} дн. до участия`);
     });
@@ -391,12 +391,12 @@ async function handleMessage(msg) {
       parse_mode: 'HTML',
       reply_markup: OPEN_BUTTON,
       text: `🎁 <b>Розыгрыши Forma</b>\n\nТвоя честная серия: <b>${streak} дн.</b> 🔥\n\n${lines.join('\n\n')}\n\n` +
-        '<i>Честная серия — дни подряд, где запись сделана в тот же день или не позже следующего. Чем длиннее серия, тем больше билетов.</i>',
+        '<i>Честная серия - дни подряд, где запись сделана в тот же день или не позже следующего. Чем длиннее серия, тем больше билетов.</i>',
     });
     return;
   }
 
-  // Удалить пробежку по жалобе — только для админа: /delrun 12
+  // Удалить пробежку по жалобе - только для админа: /delrun 12
   const delRun = /^\/delrun\s+(\d+)$/.exec(text);
   if (delRun) {
     if (!(await isAdmin(msg.from.id))) return;
@@ -405,14 +405,14 @@ async function handleMessage(msg) {
     return;
   }
 
-  // Тестовый розыгрыш — только для админа: /draw_week или /draw_month
+  // Тестовый розыгрыш - только для админа: /draw_week или /draw_month
   if (text === '/draw_week' || text === '/draw_month') {
     if (!(await isAdmin(msg.from.id))) return;
     await runDraw(text === '/draw_week' ? 'week' : 'month', sendText, { force: true });
     return;
   }
 
-  // Посмотреть, как выглядит напоминание — только для админа
+  // Посмотреть, как выглядит напоминание - только для админа
   if (text === '/remind_test') {
     if (!(await isAdmin(msg.from.id))) return;
     const u = await query(
@@ -423,24 +423,24 @@ async function handleMessage(msg) {
     return;
   }
 
-  // Статистика приложения — только для админа
+  // Статистика приложения - только для админа
   if (text === '/stats') {
     if (!(await isAdmin(msg.from.id))) return;
     await tg('sendMessage', { chat_id: chatId, text: await buildStats(), parse_mode: 'HTML' });
     return;
   }
 
-  // Итоги недели прямо сейчас — только для админа, только себе
+  // Итоги недели прямо сейчас - только для админа, только себе
   if (text === '/digest_test') {
     if (!(await isAdmin(msg.from.id))) return;
     const n = await sendWeeklyDigests(sendTgHtml, { force: true, onlyTelegramId: msg.from.id });
-    if (!n) await sendTgHtml(chatId, 'За эту неделю пока нет записей — итоги не из чего собрать.');
+    if (!n) await sendTgHtml(chatId, 'За эту неделю пока нет записей - итоги не из чего собрать.');
     return;
   }
 
 
-  // Рассылка «как поставить Forma на экран Домой» — только для админа.
-  // /ios_test — сообщение придёт только тебе (посмотреть, как выглядит), /ios_send — всем, кто пользуется Forma через Telegram.
+  // Рассылка «как поставить Forma на экран Домой» - только для админа.
+  // /ios_test - сообщение придёт только тебе (посмотреть, как выглядит), /ios_send - всем, кто пользуется Forma через Telegram.
   // Повторно одному и тому же человеку не отправляется.
   if (text === '/ios_test') {
     if (!(await isAdmin(msg.from.id))) return;
@@ -459,7 +459,7 @@ async function handleMessage(msg) {
     return;
   }
 
-  // любое другое сообщение — мягко отправляем в приложение
+  // любое другое сообщение - мягко отправляем в приложение
   await tg('sendMessage', {
     chat_id: chatId,
     text: 'Все тренировки и Fom живут в приложении 👇',
@@ -467,7 +467,7 @@ async function handleMessage(msg) {
   });
 }
 
-// GET /api/bot/giveaway — статус розыгрышей для приложения
+// GET /api/bot/giveaway - статус розыгрышей для приложения
 router.get('/giveaway', requireTelegramAuth, async (req, res) => {
   try {
     const u = await query('SELECT id FROM users WHERE telegram_id = $1', [req.telegramUser.id]);
@@ -499,30 +499,30 @@ function storyQuotaOk(owner) {
   return n < STORY_PER_USER;
 }
 
-// POST /api/bot/story — тело запроса: JPEG-картинка (image/jpeg), до 1.5 МБ
+// POST /api/bot/story - тело запроса: JPEG-картинка (image/jpeg), до 1.5 МБ
 router.post('/story', requireTelegramAuth, express.raw({ type: 'image/jpeg', limit: '1500kb' }), (req, res) => {
   const buf = req.body;
   const isJpeg = Buffer.isBuffer(buf) && buf.length > 1000 && buf[0] === 0xff && buf[1] === 0xd8;
   if (!isJpeg) return res.status(400).json({ error: 'Нужна картинка JPEG' });
   cleanStories();
-  if (!storyQuotaOk(req.telegramUser.id)) return res.status(429).json({ error: 'Слишком много картинок подряд — подожди немного' });
+  if (!storyQuotaOk(req.telegramUser.id)) return res.status(429).json({ error: 'Слишком много картинок подряд - подожди немного' });
   const id = crypto.randomBytes(12).toString('hex');
   stories.set(id, { buf, at: Date.now(), owner: req.telegramUser.id });
   res.json({ url: `${PUBLIC_URL}/api/bot/story/${id}.jpg` });
 });
 
-// POST /api/bot/export — выгрузка дневника (CSV-файл), отдаём по короткой ссылке, чтобы Telegram скачал
+// POST /api/bot/export - выгрузка дневника (CSV-файл), отдаём по короткой ссылке, чтобы Telegram скачал
 router.post('/export', requireTelegramAuth, express.raw({ type: 'text/csv', limit: '3mb' }), (req, res) => {
   const buf = req.body;
   if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'Пустой файл' });
   cleanStories();
-  if (!storyQuotaOk(req.telegramUser.id)) return res.status(429).json({ error: 'Слишком много файлов подряд — подожди немного' });
+  if (!storyQuotaOk(req.telegramUser.id)) return res.status(429).json({ error: 'Слишком много файлов подряд - подожди немного' });
   const id = crypto.randomBytes(12).toString('hex');
   stories.set(id, { buf, at: Date.now(), type: 'text/csv; charset=utf-8', owner: req.telegramUser.id });
   res.json({ url: `${PUBLIC_URL}/api/bot/story/${id}.csv` });
 });
 
-// GET /api/bot/story/:id.jpg — сама картинка (её забирает Telegram)
+// GET /api/bot/story/:id.jpg - сама картинка (её забирает Telegram)
 router.get('/story/:file', (req, res) => {
   const id = String(req.params.file || '').replace(/\.(jpg|csv)$/, '');
   const s = /^[a-f0-9]{24}$/.test(id) && stories.get(id);
@@ -533,7 +533,7 @@ router.get('/story/:file', (req, res) => {
   res.send(s.buf);
 });
 
-// POST /api/bot/webhook — сюда Telegram присылает сообщения боту
+// POST /api/bot/webhook - сюда Telegram присылает сообщения боту
 router.post('/webhook', (req, res) => {
   // проверяем, что запрос действительно от Telegram (секрет знает только Telegram и наш сервер)
   const got = String(req.headers['x-telegram-bot-api-secret-token'] || '');
