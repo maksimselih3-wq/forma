@@ -4,10 +4,10 @@ import { requireTelegramAuth } from '../telegramAuth.js';
 
 /**
  * Жалобы и блокировка пользователей.
- *  POST /api/safety/block   { user_id }  — заблокировать: связь дружбы стирается, контент друг друга больше не виден
+ *  POST /api/safety/block   { user_id }  - заблокировать: связь дружбы стирается, контент друг друга больше не виден
  *  POST /api/safety/unblock { user_id }
- *  GET  /api/safety/blocks               — список заблокированных мной
- *  POST /api/safety/report  { kind, target_id, user_id, reason } — жалоба; админу приходит сообщение в бота
+ *  GET  /api/safety/blocks               - список заблокированных мной
+ *  POST /api/safety/report  { kind, target_id, user_id, reason } - жалоба; админу приходит сообщение в бота
  */
 const router = Router();
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -31,7 +31,7 @@ router.post('/block', async (req, res) => {
   const u = await query('SELECT id FROM users WHERE id = $1', [id]);
   if (!u.rows.length) return res.status(404).json({ error: 'Пользователь не найден' });
   await query('INSERT INTO user_blocks (blocker, blocked) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.me.id, id]);
-  // дружба в любую сторону (и заявки) — стираем
+  // дружба в любую сторону (и заявки) - стираем
   await query('DELETE FROM friendships WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)', [req.me.id, id]);
   res.json({ ok: true });
 });
