@@ -121,7 +121,7 @@ export async function sendReminders(send, { force = false } = {}) {
     );
     if (!claim.rows.length) continue;
 
-    const res = await send(u.telegram_id, reminderText(u, today));
+    const res = await send(u.telegram_id, reminderText(u, today), 'reminder');
     if (res?.ok) sent++;
     else if (/blocked|deactivated|not found|initiate/i.test(res?.description || '')) {
       // бот заблокирован или человек не открывал чат с ботом - больше не пытаемся
