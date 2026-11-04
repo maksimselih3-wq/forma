@@ -16,9 +16,9 @@ dotenv.config();
  * (запись приватная; человек потом дополняет её: самочувствие, заметки, отрезки).
  *
  * Переменные в Railway:
- *   STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET — со страницы https://www.strava.com/settings/api
- *   STRAVA_VERIFY_TOKEN — любая строка (нужна один раз для подписки на вебхук; если не задана — берётся из секрета)
- *   PUBLIC_URL (уже есть) — адрес, на который Strava вернёт человека после разрешения.
+ *   STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET - со страницы https://www.strava.com/settings/api
+ *   STRAVA_VERIFY_TOKEN - любая строка (нужна один раз для подписки на вебхук; если не задана - берётся из секрета)
+ *   PUBLIC_URL (уже есть) - адрес, на который Strava вернёт человека после разрешения.
  *   Необязательно: STRAVA_BACKFILL_DAYS (по умолчанию 7), STRAVA_NOTIFY=0 (не писать в бот), BOT_USERNAME.
  */
 
@@ -117,7 +117,7 @@ async function clearConnection(userId) {
     strava_expires_at = NULL, strava_connected_at = NULL WHERE id = $1`, [userId]);
 }
 
-// Свежий access-токен человека (обновляем, если истёк). null — связь потеряна.
+// Свежий access-токен человека (обновляем, если истёк). null - связь потеряна.
 async function accessTokenFor(user) {
   const refresh = unseal(user.strava_refresh_token);
   if (!refresh) return null;
@@ -158,7 +158,7 @@ function hms(sec) {
 }
 const kmText = (m) => `${(Math.round(m / 10) / 100).toString().replace('.', ',')} км`;
 
-// Начало и конец: Strava отдаёт местное время старта («2026-10-16T07:05:00Z» — это уже местное, без пересчёта)
+// Начало и конец: Strava отдаёт местное время старта («2026-10-16T07:05:00Z» - это уже местное, без пересчёта)
 function times(a) {
   const local = String(a.start_date_local || '');
   const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(local);
@@ -178,11 +178,11 @@ function describe(a) {
     if (a.moving_time > 0) parts.push(hms(a.moving_time));
   }
   const extra = parts.length ? ` (${parts.join(', ')})` : '';
-  return `Strava · ${label}${name ? ` — ${name}` : ''}${extra}`.slice(0, 600);
+  return `Strava · ${label}${name ? ` - ${name}` : ''}${extra}`.slice(0, 600);
 }
 
 
-// Отрезки (laps) тренировки → подходы Forma. Быстрые отрезки — подходы, медленные короткие между ними — «отдых» предыдущего.
+// Отрезки (laps) тренировки → подходы Forma. Быстрые отрезки - подходы, медленные короткие между ними - «отдых» предыдущего.
 function setsFromLaps(a) {
   const total = Math.round(a.distance) || 0;
   const single = [{ distance_m: total, reps: 1, time_or_pace: hms(a.moving_time || a.elapsed_time), rest_between: null }];
@@ -202,12 +202,12 @@ function setsFromLaps(a) {
       out[out.length - 1].rest_between = hms(l.elapsed_time || l.moving_time);
       return;
     }
-    if (isRest(l, i) && out.length) return; // два отдыха подряд — второй не нужен
+    if (isRest(l, i) && out.length) return; // два отдыха подряд - второй не нужен
     out.push({ distance_m: Math.round(l.distance), reps: 1, time_or_pace: hms(l.moving_time || l.elapsed_time), rest_between: null, _lap: l });
   });
   if (!out.length) return single;
 
-  // Интервалы «по времени» (например 2 мин быстро): время почти одинаковое, а дистанция гуляет — пишем время, а темп отдельно
+  // Интервалы «по времени» (например 2 мин быстро): время почти одинаковое, а дистанция гуляет - пишем время, а темп отдельно
   const T = (o) => o._lap.moving_time || o._lap.elapsed_time;
   const med = [...out].map(T).sort((x, y) => x - y)[Math.floor(out.length / 2)];
   const grp = out.filter((o) => Math.abs(T(o) - med) <= med * 0.15);
@@ -260,7 +260,7 @@ async function notifyUser(user, text) {
 
 /**
  * Кладёт одну тренировку Strava в дневник. Возвращает 'created' | 'linked' | 'updated' | 'skipped'.
- * quiet — не писать человеку в бот (при первом подключении, чтобы не засыпать сообщениями).
+ * quiet - не писать человеку в бот (при первом подключении, чтобы не засыпать сообщениями).
  */
 export async function importActivity(user, a, { quiet = false } = {}) {
   await stravaReady;
@@ -279,13 +279,13 @@ export async function importActivity(user, a, { quiet = false } = {}) {
   const hrMax = a.max_heartrate >= 30 && a.max_heartrate <= 250 ? Math.round(a.max_heartrate) : null;
 
   return serial(user.id, async () => {
-    // уже импортировали — обновляем только то, чем «владеет» Strava (пульс, время, объём)
+    // уже импортировали - обновляем только то, чем «владеет» Strava (пульс, время, объём)
     const same = await query('SELECT id FROM workouts WHERE strava_activity_id = $1', [a.id]);
     if (same.rows.length) {
       await query(`UPDATE workouts SET hr_avg = COALESCE($1, hr_avg), hr_max = COALESCE($2, hr_max),
         start_time = COALESCE($3, start_time), end_time = COALESCE($4, end_time), total_km = COALESCE($5, total_km)
         WHERE id = $6 AND source = 'strava'`, [hrAvg, hrMax, t.start, t.end, km, same.rows[0].id]);
-      // запись ещё с одним общим подходом — раскладываем по отрезкам Strava (если человек уже правил подходы, не трогаем)
+      // запись ещё с одним общим подходом - раскладываем по отрезкам Strava (если человек уже правил подходы, не трогаем)
       if (isRun && Array.isArray(a.laps)) {
         const cur = await query(`SELECT w.source, (SELECT COUNT(*) FROM workout_sets WHERE workout_id = w.id) AS n FROM workouts w WHERE w.id = $1`, [same.rows[0].id]);
         const sets = setsFromLaps(a);
@@ -302,7 +302,7 @@ export async function importActivity(user, a, { quiet = false } = {}) {
          (SELECT COALESCE(SUM(s.distance_m * GREATEST(COALESCE(s.reps, 1), 1)), 0) FROM workout_sets s WHERE s.workout_id = w.id) AS sets_m
        FROM workouts w WHERE w.user_id = $1 AND w.date = $2 ORDER BY w.session`, [user.id, t.date]);
 
-    // человек уже записал эту тренировку вручную — не делаем дубль, а привязываем и дополняем пустое
+    // человек уже записал эту тренировку вручную - не делаем дубль, а привязываем и дополняем пустое
     if (km) {
       for (const w of day.rows) {
         if (w.type !== 'training' || w.strava_activity_id) continue;
@@ -315,7 +315,7 @@ export async function importActivity(user, a, { quiet = false } = {}) {
       }
     }
 
-    // номер за день: 1, а если первая тренировка уже есть — 2
+    // номер за день: 1, а если первая тренировка уже есть - 2
     const first = day.rows.find((w) => w.session === 1);
     let session = 1;
     if (first) {
@@ -340,7 +340,7 @@ export async function importActivity(user, a, { quiet = false } = {}) {
     if (!quiet) {
       const label = SPORT_RU[sport] || 'Тренировка';
       const what = isRun ? `${label} ${kmText(a.distance)} за ${hms(a.moving_time || a.elapsed_time)}` : label;
-      await notifyUser(user, `🟠 Забрал из Strava: ${what}.\nЗагляни в дневник и дополни запись — самочувствие, заметки, отрезки.`);
+      await notifyUser(user, `🟠 Забрал из Strava: ${what}.\nЗагляни в дневник и дополни запись - самочувствие, заметки, отрезки.`);
     }
     return 'created';
   });
@@ -363,7 +363,7 @@ async function syncRecent(userId, { quiet = false } = {}) {
   for (const a of r.data.sort((x, y) => String(x.start_date).localeCompare(String(y.start_date)))) {
     try {
       let act = a;
-      if (RUN_TYPES.has(a.sport_type || a.type) && !Array.isArray(a.laps)) { // в списке отрезков нет — берём подробности
+      if (RUN_TYPES.has(a.sport_type || a.type) && !Array.isArray(a.laps)) { // в списке отрезков нет - берём подробности
         const d = await stravaFetch(`https://www.strava.com/api/v3/activities/${a.id}`, { headers: { Authorization: `Bearer ${token}` } });
         if (d.ok && d.data) act = d.data;
       }
@@ -374,7 +374,7 @@ async function syncRecent(userId, { quiet = false } = {}) {
 }
 
 // ---------- вебхук Strava ----------
-// Проверка при подписке: Strava присылает GET с hub.challenge — отвечаем тем же
+// Проверка при подписке: Strava присылает GET с hub.challenge - отвечаем тем же
 router.get('/webhook', (req, res) => {
   if (req.query['hub.mode'] === 'subscribe' && VERIFY_TOKEN && req.query['hub.verify_token'] === VERIFY_TOKEN) {
     return res.json({ 'hub.challenge': req.query['hub.challenge'] });
@@ -394,19 +394,19 @@ router.post('/webhook', (req, res) => {
     const user = u.rows[0];
     if (!user) return;
 
-    // человек отключил Forma в самой Strava — стираем токены
+    // человек отключил Forma в самой Strava - стираем токены
     if (ev.object_type === 'athlete' && ev.updates?.authorized === 'false') { await clearConnection(user.id); return; }
 
     if (ev.object_type !== 'activity' || !['create', 'update'].includes(ev.aspect_type)) return; // удаление игнорируем: дневник остаётся
     const token = await accessTokenFor(user);
     if (!token) return;
     const r = await stravaFetch(`https://www.strava.com/api/v3/activities/${Number(ev.object_id)}`, { headers: { Authorization: `Bearer ${token}` } });
-    if (!r.ok || !r.data) return; // приватная/удалённая или лимит — пропускаем
+    if (!r.ok || !r.data) return; // приватная/удалённая или лимит - пропускаем
     await importActivity(user, r.data);
   })().catch((e) => console.error('Strava webhook failed:', e.message));
 });
 
-// Подписка на вебхук: один раз на приложение. Делаем при каждом запуске сервера — если она уже есть, ничего не меняется.
+// Подписка на вебхук: один раз на приложение. Делаем при каждом запуске сервера - если она уже есть, ничего не меняется.
 export async function ensureStravaWebhook() {
   if (!stravaConfigured()) return;
   try {
@@ -446,7 +446,7 @@ router.get('/status', requireTelegramAuth, async (req, res) => {
 });
 
 router.post('/connect', requireTelegramAuth, async (req, res) => {
-  if (!stravaConfigured()) return res.status(503).json({ error: 'Strava пока не настроена — загляни чуть позже 🙂' });
+  if (!stravaConfigured()) return res.status(503).json({ error: 'Strava пока не настроена - загляни чуть позже 🙂' });
   const user = await me(req);
   if (!user) return res.status(404).json({ error: 'User not found' });
   const url = 'https://www.strava.com/oauth/authorize?' + new URLSearchParams({
@@ -476,7 +476,7 @@ router.get('/callback', async (req, res) => {
   try {
     await stravaReady;
     const { code, state, error, scope } = req.query;
-    if (error) return res.send(page('Доступ не дан', 'Ты отказался от доступа — Forma ничего не подключила. Можно попробовать ещё раз в настройках.', false));
+    if (error) return res.send(page('Доступ не дан', 'Ты отказался от доступа - Forma ничего не подключила. Можно попробовать ещё раз в настройках.', false));
     const userId = readState(state);
     if (!userId || !code) return res.status(400).send(page('Ссылка устарела', 'Открой Forma → Настройки → Strava и нажми «Подключить» ещё раз.', false));
     if (scope && !String(scope).includes('activity:read')) {
@@ -487,7 +487,7 @@ router.get('/callback', async (req, res) => {
       console.error('Strava token exchange failed:', r.status, r.text.slice(0, 200));
       return res.status(502).send(page('Не получилось', 'Strava не подтвердила подключение. Попробуй ещё раз чуть позже.', false));
     }
-    // один аккаунт Strava — один человек в Forma
+    // один аккаунт Strava - один человек в Forma
     await query('UPDATE users SET strava_athlete_id = NULL, strava_access_token = NULL, strava_refresh_token = NULL, strava_expires_at = NULL, strava_connected_at = NULL WHERE strava_athlete_id = $1 AND id <> $2',
       [r.data.athlete.id, userId]);
     await query(`UPDATE users SET strava_athlete_id = $1, strava_access_token = $2, strava_refresh_token = $3, strava_expires_at = $4, strava_connected_at = now() WHERE id = $5`,
@@ -506,7 +506,7 @@ router.get('/callback', async (req, res) => {
   }
 });
 
-// Кнопка «Обновить сейчас» — не чаще раза в минуту
+// Кнопка «Обновить сейчас» - не чаще раза в минуту
 const lastSync = new Map();
 router.post('/sync', requireTelegramAuth, async (req, res) => {
   const user = await me(req);
@@ -515,7 +515,7 @@ router.post('/sync', requireTelegramAuth, async (req, res) => {
   if (Date.now() - (lastSync.get(user.id) || 0) < 60_000) return res.status(429).json({ error: 'Подожди минуту и попробуй снова 🙂' });
   lastSync.set(user.id, Date.now());
   const s = await syncRecent(user.id, { quiet: true });
-  if (!s.ok) return res.status(502).json({ error: s.error === 'no_token' ? 'Доступ к Strava потерян — подключи её заново.' : 'Strava сейчас не отвечает, попробуй позже.' });
+  if (!s.ok) return res.status(502).json({ error: s.error === 'no_token' ? 'Доступ к Strava потерян - подключи её заново.' : 'Strava сейчас не отвечает, попробуй позже.' });
   res.json(s);
 });
 
