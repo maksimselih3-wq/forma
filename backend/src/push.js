@@ -5,7 +5,7 @@ import { query } from './db.js';
  * Push-уведомления в мобильное приложение (Android / iOS) через Firebase Cloud Messaging (HTTP v1).
  * Без внешних библиотек: ключ сервис-аккаунта подписывает короткий JWT, Google выдаёт access-токен.
  *
- * Нужна переменная FIREBASE_SERVICE_ACCOUNT — содержимое JSON-ключа сервис-аккаунта Firebase
+ * Нужна переменная FIREBASE_SERVICE_ACCOUNT - содержимое JSON-ключа сервис-аккаунта Firebase
  * (можно целиком JSON или в base64). Без неё push тихо выключен, всё остальное работает.
  */
 
@@ -27,7 +27,7 @@ function loadAccount() {
   }
 }
 
-let account; // undefined — ещё не читали
+let account; // undefined - ещё не читали
 const getAccount = () => (account === undefined ? (account = loadAccount()) : account);
 export const pushEnabled = () => !!getAccount();
 
@@ -88,7 +88,7 @@ export function plainPush(html) {
 
 /**
  * Отправить push человеку на все его устройства.
- * Возвращает число устройств, на которые доставка принята (0 — push не вышел, можно слать в Telegram).
+ * Возвращает число устройств, на которые доставка принята (0 - push не вышел, можно слать в Telegram).
  */
 export async function sendPush(telegramId, body, { title = '', data = {} } = {}) {
   const acc = getAccount();
@@ -125,7 +125,7 @@ export async function sendPush(telegramId, body, { title = '', data = {} } = {})
       const err = await res.json().catch(() => ({}));
       const status = err?.error?.status || '';
       if (res.status === 404 || status === 'NOT_FOUND' || status === 'UNREGISTERED' || status === 'INVALID_ARGUMENT') {
-        // приложение удалено или ключ устарел — забываем это устройство
+        // приложение удалено или ключ устарел - забываем это устройство
         await query('DELETE FROM push_tokens WHERE token = $1', [token]).catch(() => {});
       } else {
         console.error('Push failed:', res.status, status);
