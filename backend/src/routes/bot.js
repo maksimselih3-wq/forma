@@ -248,6 +248,14 @@ function escapeHtml(s) {
 
 // Нажатия на кнопки под сообщениями бота (сейчас — подтверждение входа)
 async function handleCallback(cb) {
+  // выбор телефона в рассылке «установка на экран»: показываем нужную инструкцию в том же сообщении
+  const hp = /^hp:(ios|and|menu)$/.exec(String(cb.data || ''));
+  if (hp && cb.message?.chat?.id && cb.message.chat.type === 'private') {
+    await tg('answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {});
+    const view = hp[1] === 'ios' ? [HOME_IOS + HOME_FOOT, HOME_BACK] : hp[1] === 'and' ? [HOME_ANDROID + HOME_FOOT, HOME_BACK] : [HOME_INTRO, HOME_MENU];
+    await tg('editMessageText', { chat_id: cb.message.chat.id, message_id: cb.message.message_id, text: view[0], parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: view[1] });
+    return;
+  }
   const m = /^wl:(y|n):([a-f0-9]{24})$/.exec(String(cb.data || ''));
   const chatId = cb.message?.chat?.id;
   if (!m || !cb.from?.id || !chatId || cb.message?.chat?.type !== 'private') {
@@ -270,18 +278,31 @@ async function handleCallback(cb) {
 
 
 // ---------- Рассылка: установка на экран «Домой» (iPhone) ----------
-const IOS_HOME_TEXT = `📲 <b>Forma на iPhone — установи на экран «Домой»</b>
+const HOME_INTRO = `📲 <b>Forma на экране телефона</b>
 
-Так приложение открывается на весь экран, как обычное, работает даже когда Telegram не открывается, и не нужен App Store.
+Так приложение открывается на весь экран, как обычное, работает даже когда Telegram не открывается, и не нужен магазин приложений.
+
+Выбери свой телефон 👇`;
+const HOME_IOS = `🍎 <b>iPhone — установка на экран «Домой»</b>
 
 1. Открой ссылку в <b>Safari</b>:
 ${APP_URL}
 (если она открылась внутри Telegram — нажми значок компаса или «⋯» и выбери «Открыть в Safari»)
 2. Внизу нажми «Поделиться» (квадрат со стрелкой).
 3. Выбери «На экран «Домой»» и нажми «Добавить».
-4. Открой Forma с главного экрана и войди — через Telegram или по почте. Дневник и серия те же.
+4. Открой Forma с главного экрана и войди — через Telegram или по почте. Дневник и серия те же.`;
+const HOME_ANDROID = `🤖 <b>Android — установка на главный экран</b>
 
-Если что-то не получилось — просто напиши сюда.`;
+1. Открой ссылку в <b>Chrome</b>:
+${APP_URL}
+(если она открылась внутри Telegram — нажми «⋯» и выбери «Открыть в браузере»)
+2. Нажми «⋯» справа вверху.
+3. Выбери «Установить приложение» (или «Добавить на главный экран») и подтверди.
+4. Открой Forma с главного экрана и войди — через Telegram или по почте. Дневник и серия те же.`;
+const HOME_FOOT = '\n\nЕсли что-то не получилось — просто напиши сюда.';
+const HOME_MENU = { inline_keyboard: [[{ text: '🍎 iPhone', callback_data: 'hp:ios' }, { text: '🤖 Android', callback_data: 'hp:and' }]] };
+const HOME_BACK = { inline_keyboard: [[{ text: '← Выбрать другой телефон', callback_data: 'hp:menu' }]] };
+const IOS_HOME_TEXT = HOME_INTRO; // сообщение рассылки: короткое вступление и выбор телефона
 const IOS_BROADCAST_KEY = 'ios-home-1';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function sendIosBroadcast(adminChat) {
@@ -294,7 +315,7 @@ async function sendIosBroadcast(adminChat) {
        AND telegram_id NOT IN (SELECT telegram_id FROM broadcast_log WHERE key = $1)`, [IOS_BROADCAST_KEY]);
   let sent = 0, failed = 0;
   for (const row of r.rows) {
-    const res = await tg('sendMessage', { chat_id: row.telegram_id, text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true });
+    const res = await tg('sendMessage', { chat_id: row.telegram_id, text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: HOME_MENU });
     const ok = !!res?.ok;
     ok ? sent++ : failed++;
     await query('INSERT INTO broadcast_log (key, telegram_id, ok) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [IOS_BROADCAST_KEY, row.telegram_id, ok]).catch(() => 0);
@@ -423,7 +444,7 @@ async function handleMessage(msg) {
   // Повторно одному и тому же человеку не отправляется.
   if (text === '/ios_test') {
     if (!(await isAdmin(msg.from.id))) return;
-    await tg('sendMessage', { chat_id: chatId, text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true });
+    await tg('sendMessage', { chat_id: chatId, text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: HOME_MENU });
     return;
   }
   if (text === '/ios_send') {
