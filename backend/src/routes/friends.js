@@ -16,13 +16,13 @@ for (const m of ['get', 'post', 'delete']) {
 }
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-// Ссылка на само приложение — для кнопки «Открыть Forma» в уведомлениях
+// Ссылка на само приложение - для кнопки «Открыть Forma» в уведомлениях
 const APP_URL = process.env.APP_URL || 'https://maksimselih3-wq.github.io/forma-2/';
 
 // Какие реакции можно ставить на тренировку
 const REACTIONS = ['🔥', '👏', '💪', '🚀'];
 
-// Публичные поля человека, которые видят друзья (без фото целиком — фото грузится отдельно)
+// Публичные поля человека, которые видят друзья (без фото целиком - фото грузится отдельно)
 const PUBLIC_USER = `u.id, u.username, u.first_name, u.last_name, u.current_streak, u.longest_streak, u.sport, u.discipline,
   COALESCE(u.avatar_ver, CASE WHEN u.photo_url IS NOT NULL THEN 'tg' END) AS avatar_v`;
 
@@ -55,7 +55,7 @@ async function areFriends(a, b) {
   a = parseInt(a, 10);
   b = parseInt(b, 10);
   if (!a || !b) return false;
-  if (Number(a) === Number(b)) return true; // сам себе «друг» — можно смотреть свой профиль глазами друзей
+  if (Number(a) === Number(b)) return true; // сам себе «друг» - можно смотреть свой профиль глазами друзей
   const r = await query(
     `SELECT 1 FROM friendships WHERE status = 'accepted'
        AND ((user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1))`,
@@ -64,7 +64,7 @@ async function areFriends(a, b) {
   return r.rows.length > 0;
 }
 
-// Может ли человек видеть тренировку: своя — всегда, чужая — только открытая и только у друга
+// Может ли человек видеть тренировку: своя - всегда, чужая - только открытая и только у друга
 async function getVisibleWorkout(meId, workoutId) {
   workoutId = parseInt(workoutId, 10);
   if (!workoutId) return null;
@@ -81,7 +81,7 @@ async function getVisibleWorkout(meId, workoutId) {
 // Уведомление в Telegram от бота (если человек когда-то запускал бота). Ошибки не мешают приложению.
 function notify(telegramId, text) {
   if (!telegramId) return;
-  // в приложении — push; если у человека его нет (или доставка не вышла) — сообщение от бота в Telegram
+  // в приложении - push; если у человека его нет (или доставка не вышла) - сообщение от бота в Telegram
   sendPush(telegramId, text).catch(() => 0).then((n) => {
     if (n > 0 || !BOT_TOKEN) return;
     return fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -98,7 +98,7 @@ function notify(telegramId, text) {
 
 /**
  * К списку тренировок добавляем: автора, реакции (сколько каких + моя) и число комментариев.
- * Отзыв Fom не показываем никому, кроме хозяина — это личное.
+ * Отзыв Fom не показываем никому, кроме хозяина - это личное.
  */
 // ---------- Личные рекорды ----------
 const asComp = (c) => { if (typeof c === 'string') { try { return JSON.parse(c); } catch { return null; } } return c; };
@@ -117,7 +117,7 @@ async function startsByUser(userIds) {
   Object.entries(manual).forEach(([uid, list]) => { (by[uid] ||= []).push(...list); });
   return by;
 }
-// Старт — личный рекорд, если он лучше всех прошлых стартов человека в этой дисциплине
+// Старт - личный рекорд, если он лучше всех прошлых стартов человека в этой дисциплине
 function isPersonalBest(w, starts) {
   const c = asComp(w.competition);
   if (!c?.discipline || !c?.result) return false;
@@ -171,11 +171,11 @@ async function withSocial(workouts, meId, knownStarts) {
 
 // ===================================================================
 //  ФОТО ПРОФИЛЯ ДРУГА
-//  GET /api/friends/avatar/:userId?auth=... — картинка для <img>.
+//  GET /api/friends/avatar/:userId?auth=... - картинка для <img>.
 //  Картинка не умеет слать заголовки, поэтому подпись Telegram передаём в адресе.
 // ===================================================================
 // Чтобы десяток фото в списке не давал десятки запросов к базе: проверку «это мой друг» помним минуту,
-// а сами картинки (они не меняются, пока не сменится версия ?v=) — в памяти сервера.
+// а сами картинки (они не меняются, пока не сменится версия ?v=) - в памяти сервера.
 const avaOk = new Map();   // `${auth}|${userId}` -> до какого момента проверка действует
 const avaBuf = new Map();  // `${userId}:${v}` -> { type, buf }
 let avaBytes = 0;
@@ -213,7 +213,7 @@ router.get('/avatar/:userId', async (req, res) => {
     const buf = Buffer.from(m[2], 'base64');
     if (req.query.v) avaRemember(`${uid}:${req.query.v}`, m[1], buf);
     res.set('Content-Type', m[1]);
-    // адрес с версией (?v=…) меняется вместе с фото — можно хранить «навсегда»
+    // адрес с версией (?v=…) меняется вместе с фото - можно хранить «навсегда»
     res.set('Cache-Control', req.query.v ? 'private, max-age=31536000, immutable' : 'private, max-age=86400');
     return res.send(buf);
   }
@@ -221,14 +221,14 @@ router.get('/avatar/:userId', async (req, res) => {
   res.status(404).end();
 });
 
-// Всё остальное — только с проверкой Telegram
+// Всё остальное - только с проверкой Telegram
 router.use(requireTelegramAuth, safe(loadMe));
 
 // ===================================================================
 //  ЗАЯВКИ И СПИСОК ДРУЗЕЙ
 // ===================================================================
 
-// POST /api/friends/request { username } — найти по Telegram username (без @) и отправить заявку
+// POST /api/friends/request { username } - найти по Telegram username (без @) и отправить заявку
 router.post('/request', async (req, res) => {
   const me = req.me;
   const username = (req.body.username || '').replace(/^@/, '').trim();
@@ -259,7 +259,7 @@ router.post('/request', async (req, res) => {
   res.json({ ok: true });
 });
 
-// GET /api/friends/requests — входящие заявки (кто-то добавил меня)
+// GET /api/friends/requests - входящие заявки (кто-то добавил меня)
 router.get('/requests', async (req, res) => {
   const result = await query(
     `SELECT f.id AS friendship_id, ${PUBLIC_USER}
@@ -286,7 +286,7 @@ router.post('/accept', async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/friends/decline { friendshipId } — отклонить входящую заявку
+// POST /api/friends/decline { friendshipId } - отклонить входящую заявку
 router.post('/decline', async (req, res) => {
   await query(
     `DELETE FROM friendships WHERE id = $1 AND friend_id = $2 AND status = 'pending'`,
@@ -295,7 +295,7 @@ router.post('/decline', async (req, res) => {
   res.json({ ok: true });
 });
 
-// GET /api/friends — список друзей: серия и когда последний раз тренировался
+// GET /api/friends - список друзей: серия и когда последний раз тренировался
 router.get('/', async (req, res) => {
   const result = await query(
     `SELECT ${PUBLIC_USER},
@@ -311,7 +311,7 @@ router.get('/', async (req, res) => {
 
 // ===================================================================
 //  ЛЕНТА: открытые тренировки друзей и мои, самые свежие сверху
-//  GET /api/friends/feed?before_date=ГГГГ-ММ-ДД&before_id=N — следующая порция
+//  GET /api/friends/feed?before_date=ГГГГ-ММ-ДД&before_id=N - следующая порция
 // ===================================================================
 router.get('/feed', async (req, res) => {
   const beforeDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.before_date || '') ? req.query.before_date : null;
@@ -349,7 +349,7 @@ const ACTIVITY_SQL = `
     WHERE w.user_id = $1 AND c.user_id <> $1
   ) a`;
 
-// GET /api/friends/activity/count — число новых событий и заявок (для значка на кнопке «Друзья»)
+// GET /api/friends/activity/count - число новых событий и заявок (для значка на кнопке «Друзья»)
 router.get('/activity/count', async (req, res) => {
   const [unread, requests] = await Promise.all([
     query(`SELECT count(*)::int AS n FROM (${ACTIVITY_SQL}) x WHERE x.created_at > $2`, [
@@ -360,7 +360,7 @@ router.get('/activity/count', async (req, res) => {
   res.json({ unread: unread.rows[0].n, requests: requests.rows[0].n });
 });
 
-// GET /api/friends/activity — последние 30 событий; после просмотра они считаются прочитанными
+// GET /api/friends/activity - последние 30 событий; после просмотра они считаются прочитанными
 router.get('/activity', async (req, res) => {
   const seenAt = req.me.activity_seen_at || new Date(0);
   const result = await query(`${ACTIVITY_SQL} ORDER BY a.created_at DESC LIMIT 30`, [req.me.id]);
@@ -373,8 +373,8 @@ router.get('/activity', async (req, res) => {
 // ===================================================================
 //  НАСТРОЙКИ ПРИВАТНОСТИ
 //  POST /api/friends/settings { share_calendar?, show_records? }
-//   share_calendar — видят ли друзья все мои дни в календаре
-//   show_records   — видят ли друзья мои личные рекорды
+//   share_calendar - видят ли друзья все мои дни в календаре
+//   show_records   - видят ли друзья мои личные рекорды
 //  Меняем только то, что прислали.
 // ===================================================================
 router.post('/settings', async (req, res) => {
@@ -395,7 +395,7 @@ router.post('/settings', async (req, res) => {
 //  РЕАКЦИИ И КОММЕНТАРИИ
 // ===================================================================
 
-// GET /api/friends/workouts/:id — одна чужая тренировка (день в календаре друга), если она мне открыта
+// GET /api/friends/workouts/:id - одна чужая тренировка (день в календаре друга), если она мне открыта
 router.get('/workouts/:id', async (req, res) => {
   const w = await getVisibleWorkout(req.me.id, req.params.id);
   if (!w) return res.status(404).json({ error: 'Тренировка закрыта или удалена' });
@@ -404,7 +404,7 @@ router.get('/workouts/:id', async (req, res) => {
   res.json({ workout: item });
 });
 
-// GET /api/friends/workouts/:id/social — кто как отреагировал + все комментарии
+// GET /api/friends/workouts/:id/social - кто как отреагировал + все комментарии
 router.get('/workouts/:id/social', async (req, res) => {
   const w = await getVisibleWorkout(req.me.id, req.params.id);
   if (!w) return res.status(404).json({ error: 'Запись недоступна' });
@@ -432,7 +432,7 @@ router.get('/workouts/:id/social', async (req, res) => {
   });
 });
 
-// POST /api/friends/workouts/:id/react { emoji } — поставить реакцию; та же ещё раз — убрать
+// POST /api/friends/workouts/:id/react { emoji } - поставить реакцию; та же ещё раз - убрать
 router.post('/workouts/:id/react', async (req, res) => {
   const emoji = req.body.emoji;
   if (!REACTIONS.includes(emoji)) return res.status(400).json({ error: 'Такой реакции нет' });
@@ -464,7 +464,7 @@ router.post('/workouts/:id/react', async (req, res) => {
   res.json({ reactions: item.reactions, my_reaction: item.my_reaction });
 });
 
-// POST /api/friends/workouts/:id/comments { text } — написать комментарий
+// POST /api/friends/workouts/:id/comments { text } - написать комментарий
 router.post('/workouts/:id/comments', async (req, res) => {
   const text = (req.body.text || '').toString().trim().slice(0, 500);
   if (!text) return res.status(400).json({ error: 'Пустой комментарий' });
@@ -482,7 +482,7 @@ router.post('/workouts/:id/comments', async (req, res) => {
   res.json({ ok: true });
 });
 
-// DELETE /api/friends/comments/:id — удалить свой комментарий (или любой под своей тренировкой)
+// DELETE /api/friends/comments/:id - удалить свой комментарий (или любой под своей тренировкой)
 router.delete('/comments/:id', async (req, res) => {
   if (!parseInt(req.params.id, 10)) return res.status(400).json({ error: 'Неверный id' });
   const result = await query(
@@ -520,7 +520,7 @@ function weekStart(req) {
   return d.toISOString().slice(0, 10);
 }
 
-// GET /api/friends/invite — моя ссылка-приглашение и сколько друзей пришло
+// GET /api/friends/invite - моя ссылка-приглашение и сколько друзей пришло
 router.get('/invite', async (req, res) => {
   const stats = await referralStats(req.me.id);
   res.json({
@@ -529,7 +529,7 @@ router.get('/invite', async (req, res) => {
   });
 });
 
-// GET /api/friends/groups — мои группы
+// GET /api/friends/groups - мои группы
 router.get('/groups', async (req, res) => {
   await socialReady;
   const r = await query(
@@ -540,7 +540,7 @@ router.get('/groups', async (req, res) => {
   res.json({ groups: r.rows.map((g) => ({ ...g, link: groupLink(g.invite_code) })) });
 });
 
-// POST /api/friends/groups { name, coach_mode } — создать группу
+// POST /api/friends/groups { name, coach_mode } - создать группу
 router.post('/groups', async (req, res) => {
   await socialReady;
   const name = String(req.body.name || '').trim().slice(0, 60);
@@ -561,7 +561,7 @@ router.post('/groups', async (req, res) => {
   res.json({ group: { id: g.id, name: g.name, coach_mode: g.coach_mode, invite_code: g.invite_code, link: groupLink(g.invite_code) } });
 });
 
-// GET /api/friends/groups/preview/:code — что за группа (перед вступлением)
+// GET /api/friends/groups/preview/:code - что за группа (перед вступлением)
 router.get('/groups/preview/:code', async (req, res) => {
   await socialReady;
   const code = String(req.params.code || '').toLowerCase();
@@ -570,7 +570,7 @@ router.get('/groups/preview/:code', async (req, res) => {
        (SELECT count(*)::int FROM group_members x WHERE x.group_id = g.id) AS members,
        EXISTS (SELECT 1 FROM group_members x WHERE x.group_id = g.id AND x.user_id = $2) AS joined
      FROM groups g JOIN users u ON u.id = g.owner_id WHERE g.invite_code = $1`, [code, req.me.id]);
-  if (!r.rows[0]) return res.status(404).json({ error: 'Группа не найдена — проверь код' });
+  if (!r.rows[0]) return res.status(404).json({ error: 'Группа не найдена - проверь код' });
   res.json({ group: r.rows[0] });
 });
 
@@ -579,7 +579,7 @@ router.post('/groups/join', async (req, res) => {
   await socialReady;
   const code = String(req.body.code || '').trim().toLowerCase();
   const g = (await query('SELECT * FROM groups WHERE invite_code = $1', [code])).rows[0];
-  if (!g) return res.status(404).json({ error: 'Группа не найдена — проверь код' });
+  if (!g) return res.status(404).json({ error: 'Группа не найдена - проверь код' });
   const cnt = await query(
     `SELECT (SELECT count(*)::int FROM group_members WHERE group_id = $1) AS members,
             (SELECT count(*)::int FROM group_members WHERE user_id = $2) AS mine`, [g.id, req.me.id]);
@@ -595,7 +595,7 @@ router.post('/groups/join', async (req, res) => {
   res.json({ group: { id: g.id, name: g.name, coach_mode: g.coach_mode } });
 });
 
-// GET /api/friends/groups/:id — участники, рейтинг недели
+// GET /api/friends/groups/:id - участники, рейтинг недели
 router.get('/groups/:id', async (req, res) => {
   const gid = parseInt(req.params.id, 10);
   const g = gid && (await myMembership(gid, req.me.id));
@@ -608,7 +608,7 @@ router.get('/groups/:id', async (req, res) => {
      FROM group_members m JOIN users u ON u.id = m.user_id
      WHERE m.group_id = $1
      ORDER BY week_trainings DESC, u.current_streak DESC`, [gid, monday]);
-  // километры недели — по той же формуле, что в приложении и у Fom (отрезки + км/м в разминке и заминке + старты)
+  // километры недели - по той же формуле, что в приложении и у Fom (отрезки + км/м в разминке и заминке + старты)
   const weekW = await query(
     `${WORKOUT_SELECT} WHERE w.user_id IN (SELECT user_id FROM group_members WHERE group_id = $1) AND w.date >= $2::date AND COALESCE(w.source, '') <> 'strava'`,
     [gid, monday]);
@@ -626,7 +626,7 @@ router.get('/groups/:id', async (req, res) => {
   });
 });
 
-// GET /api/friends/groups/:id/feed — лента группы: открытые тренировки участников (тренеру — все)
+// GET /api/friends/groups/:id/feed - лента группы: открытые тренировки участников (тренеру - все)
 router.get('/groups/:id/feed', async (req, res) => {
   const gid = parseInt(req.params.id, 10);
   const g = gid && (await myMembership(gid, req.me.id));
@@ -642,7 +642,7 @@ router.get('/groups/:id/feed', async (req, res) => {
   res.json({ workouts: await withSocial(r.rows, req.me.id) });
 });
 
-// GET /api/friends/groups/:id/members/:uid — тренер смотрит дневник спортсмена целиком
+// GET /api/friends/groups/:id/members/:uid - тренер смотрит дневник спортсмена целиком
 router.get('/groups/:id/members/:uid', async (req, res) => {
   const gid = parseInt(req.params.id, 10);
   const uid = parseInt(req.params.uid, 10);
@@ -663,7 +663,7 @@ router.get('/groups/:id/members/:uid', async (req, res) => {
   });
 });
 
-// POST /api/friends/groups/:id/leave — выйти из группы (создатель удаляет группу целиком)
+// POST /api/friends/groups/:id/leave - выйти из группы (создатель удаляет группу целиком)
 router.post('/groups/:id/leave', async (req, res) => {
   const gid = parseInt(req.params.id, 10);
   const g = gid && (await myMembership(gid, req.me.id));
@@ -676,7 +676,7 @@ router.post('/groups/:id/leave', async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/friends/groups/:id/remove { userId } — создатель убирает участника
+// POST /api/friends/groups/:id/remove { userId } - создатель убирает участника
 router.post('/groups/:id/remove', async (req, res) => {
   const gid = parseInt(req.params.id, 10);
   const uid = parseInt(req.body.userId, 10);
@@ -689,14 +689,14 @@ router.post('/groups/:id/remove', async (req, res) => {
 
 // ===================================================================
 //  ПРОФИЛЬ ДРУГА
-//  GET /api/friends/:friendId/profile — фото, серия, календарь и открытые тренировки
+//  GET /api/friends/:friendId/profile - фото, серия, календарь и открытые тренировки
 // ===================================================================
 router.get('/:friendId/profile', async (req, res) => {
   const friendId = parseInt(req.params.friendId, 10);
   if (!friendId) return res.status(400).json({ error: 'Неверный id' });
   await socialReady;
   const isMe = friendId === req.me.id;
-  // всё, что не зависит друг от друга, летит в базу одновременно — раньше это были 6 запросов подряд
+  // всё, что не зависит друг от друга, летит в базу одновременно - раньше это были 6 запросов подряд
   const [friends, userRes, pioneer, stats, workouts, starts] = await Promise.all([
     areFriends(req.me.id, friendId),
     query(`SELECT ${PUBLIC_USER}, u.share_calendar, u.show_records FROM users u WHERE u.id = $1`, [friendId]),
@@ -709,7 +709,7 @@ router.get('/:friendId/profile', async (req, res) => {
        FROM workouts WHERE user_id = $1`,
       [friendId]
     ),
-    // «Как меня видят друзья» (свой профиль) — только открытые всем, остальным — ещё и открытые лично им
+    // «Как меня видят друзья» (свой профиль) - только открытые всем, остальным - ещё и открытые лично им
     query(`${WORKOUT_SELECT} WHERE w.user_id = $1 AND ${isMe ? "w.visibility = 'public'" : visibleToSql('$2')}
            ORDER BY w.date DESC LIMIT 30`, isMe ? [friendId] : [friendId, req.me.id]),
     startsByUser([friendId]),
@@ -719,12 +719,12 @@ router.get('/:friendId/profile', async (req, res) => {
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
   user.pioneer_no = pioneer;
 
-  // Календарь: если человек разрешил — все его дни (без подробностей закрытых), иначе только открытые
+  // Календарь: если человек разрешил - все его дни (без подробностей закрытых), иначе только открытые
   const daysP = query(
     `SELECT w.date, w.type, ${visibleToSql('$3')} AS public, w.id FROM workouts w
      WHERE w.user_id = $1 AND w.date > CURRENT_DATE - 400 AND ($2 OR ${visibleToSql('$3')})
      ORDER BY w.date`,
-    // для «Как меня видят друзья» смотрим глазами постороннего друга (id 0 — никто)
+    // для «Как меня видят друзья» смотрим глазами постороннего друга (id 0 - никто)
     [friendId, user.share_calendar !== false || isMe, isMe ? 0 : req.me.id]
   );
   const [days, social] = await Promise.all([daysP, withSocial(workouts.rows, req.me.id, starts)]);
@@ -747,7 +747,7 @@ router.get('/:friendId/profile', async (req, res) => {
   });
 });
 
-// GET /api/friends/:friendId/workouts — только открытые записи друга (оставлено для совместимости)
+// GET /api/friends/:friendId/workouts - только открытые записи друга (оставлено для совместимости)
 router.get('/:friendId/workouts', async (req, res) => {
   if (!(await areFriends(req.me.id, req.params.friendId))) return res.status(403).json({ error: 'Вы пока не друзья' });
   const result = await query(
@@ -757,7 +757,7 @@ router.get('/:friendId/workouts', async (req, res) => {
   res.json({ workouts: await withSocial(result.rows, req.me.id) });
 });
 
-// DELETE /api/friends/:friendId — удалить из друзей
+// DELETE /api/friends/:friendId - удалить из друзей
 router.delete('/:friendId', async (req, res) => {
   if (!parseInt(req.params.friendId, 10)) return res.status(400).json({ error: 'Неверный id' });
   await query(
