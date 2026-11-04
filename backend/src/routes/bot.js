@@ -5,6 +5,7 @@ import { requireTelegramAuth } from '../telegramAuth.js';
 import { GIVEAWAYS, giveawayStatus, runDraw, startGiveawayScheduler, isAdmin, honestStreak, nextDrawAt } from '../giveaway.js';
 import { sendPush, plainPush } from '../push.js';
 import { startReminderScheduler, reminderText, sendWeeklyDigests } from '../reminders.js';
+import { startTestersScheduler, testerDayInfo, testerMail } from '../testers.js';
 import { rememberReferral } from '../social.js';
 import { loginPending, confirmLogin, denyLogin } from '../webAuth.js';
 import { adminDeleteRun } from './partners.js';
@@ -145,6 +146,7 @@ const sendHtml = async (chatId, text, kind) => {
   return kind ? sendReplacing(chatId, kind, payload) : sendTgHtml(chatId, text);
 };
 startReminderScheduler(sendHtml);
+startTestersScheduler();
 
 function mskDateLabel(d) {
   return new Date(d).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
@@ -468,6 +470,15 @@ async function handleMessage(msg) {
   // Рассылка «как поставить Forma на экран Домой» - только для админа.
   // /ios_test - сообщение придёт только тебе (посмотреть, как выглядит), /ios_send - всем, кто пользуется Forma через Telegram.
   // Повторно одному и тому же человеку не отправляется.
+  if (text === '/testers_test') {
+    if (!(await isAdmin(msg.from.id))) return;
+    const n = String(process.env.TESTERS_EMAILS || '').split(/[,;\s]+/).filter((x) => x.includes('@')).length;
+    const info = testerDayInfo();
+    if (!info) { await tg('sendMessage', { chat_id: chatId, text: `Писем сегодня нет. Адресов в списке: ${n}. Проверь TESTERS_EMAILS и TESTERS_START (день 1 - первый день теста, формат ГГГГ-ММ-ДД).` }); return; }
+    const m = testerMail(info);
+    await tg('sendMessage', { chat_id: chatId, text: `Адресов: ${n}. Письмо уйдёт каждый день.\n\nТема: ${m.subject}\n\n${m.text}`, disable_web_page_preview: true });
+    return;
+  }
   if (text === '/ios_test') {
     if (!(await isAdmin(msg.from.id))) return;
     await tg('sendMessage', { chat_id: chatId, text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: HOME_MENU });
