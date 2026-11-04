@@ -268,6 +268,41 @@ async function handleCallback(cb) {
   }
 }
 
+
+// ---------- Рассылка: установка на экран «Домой» (iPhone) ----------
+const IOS_HOME_TEXT = `📲 <b>Forma на iPhone — установи на экран «Домой»</b>
+
+Так приложение открывается на весь экран, как обычное, работает даже когда Telegram не открывается, и не нужен App Store.
+
+1. Открой ссылку в <b>Safari</b>:
+${APP_URL}
+(если она открылась внутри Telegram — нажми значок компаса или «⋯» и выбери «Открыть в Safari»)
+2. Внизу нажми «Поделиться» (квадрат со стрелкой).
+3. Выбери «На экран «Домой»» и нажми «Добавить».
+4. Открой Forma с главного экрана и войди — через Telegram или по почте. Дневник и серия те же.
+
+Если что-то не получилось — просто напиши сюда.`;
+const IOS_BROADCAST_KEY = 'ios-home-1';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function sendIosBroadcast(adminChat) {
+  await query(`CREATE TABLE IF NOT EXISTS broadcast_log (
+    key TEXT NOT NULL, telegram_id BIGINT NOT NULL, ok BOOLEAN NOT NULL DEFAULT true, at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (key, telegram_id))`);
+  // только настоящие аккаунты Telegram (почтовые аккаунты получают номера от 7·10^15), кому ещё не писали
+  const r = await query(
+    `SELECT telegram_id FROM users WHERE telegram_id < 7000000000000000
+       AND telegram_id NOT IN (SELECT telegram_id FROM broadcast_log WHERE key = $1)`, [IOS_BROADCAST_KEY]);
+  let sent = 0, failed = 0;
+  for (const row of r.rows) {
+    const res = await tg('sendMessage', { chat_id: row.telegram_id, text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true });
+    const ok = !!res?.ok;
+    ok ? sent++ : failed++;
+    await query('INSERT INTO broadcast_log (key, telegram_id, ok) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [IOS_BROADCAST_KEY, row.telegram_id, ok]).catch(() => 0);
+    await sleep(70); // Telegram разрешает около 30 сообщений в секунду; идём заметно медленнее
+  }
+  await tg('sendMessage', { chat_id: adminChat, text: `Рассылка готова: доставлено ${sent}, не доставлено ${failed} (бот не запущен у человека или заблокирован).` });
+}
+
 async function handleMessage(msg) {
   const chatId = msg.chat?.id;
   if (!chatId || msg.chat.type !== 'private') return;
@@ -379,6 +414,22 @@ async function handleMessage(msg) {
     if (!(await isAdmin(msg.from.id))) return;
     const n = await sendWeeklyDigests(sendTgHtml, { force: true, onlyTelegramId: msg.from.id });
     if (!n) await sendTgHtml(chatId, 'За эту неделю пока нет записей — итоги не из чего собрать.');
+    return;
+  }
+
+
+  // Рассылка «как поставить Forma на экран Домой» — только для админа.
+  // /ios_test — сообщение придёт только тебе (посмотреть, как выглядит), /ios_send — всем, кто пользуется Forma через Telegram.
+  // Повторно одному и тому же человеку не отправляется.
+  if (text === '/ios_test') {
+    if (!(await isAdmin(msg.from.id))) return;
+    await tg('sendMessage', { chat_id: chatId, text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true });
+    return;
+  }
+  if (text === '/ios_send') {
+    if (!(await isAdmin(msg.from.id))) return;
+    await tg('sendMessage', { chat_id: chatId, text: 'Начинаю рассылку. Напишу, когда закончу.' });
+    sendIosBroadcast(chatId).catch((e) => tg('sendMessage', { chat_id: chatId, text: `Рассылка остановилась: ${e.message}` }));
     return;
   }
 
