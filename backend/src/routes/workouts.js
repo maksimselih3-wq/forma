@@ -8,12 +8,12 @@ import { socialReady } from '../social.js';
 
 const router = Router();
 
-// Новые записи можно добавлять только за сегодня и вчера — так серия остаётся честной.
+// Новые записи можно добавлять только за сегодня и вчера - так серия остаётся честной.
 // (Уже существующие записи за любые дни можно спокойно редактировать.)
 const MAX_BACKFILL_DAYS = 365;
 
 // Вторая тренировка за день: у записи появляется номер (session = 1 или 2).
-// Раньше в базе было правило «одна запись в день» — меняем его на «одна запись на номер в день».
+// Раньше в базе было правило «одна запись в день» - меняем его на «одна запись на номер в день».
 const schemaReady = (async () => {
   await dbReady;
   try {
@@ -32,7 +32,7 @@ const schemaReady = (async () => {
         END LOOP;
       END $$`);
     await query(`CREATE UNIQUE INDEX IF NOT EXISTS workouts_user_date_session ON workouts(user_id, date, session)`);
-    // старт (соревнование): название, дисциплина, результат, место — хранится прямо в записи
+    // старт (соревнование): название, дисциплина, результат, место - хранится прямо в записи
     await query(`ALTER TABLE workouts ADD COLUMN IF NOT EXISTS competition JSONB`);
     // отрезок по времени (фартлек, вставки): длительность в секундах вместо метров
     await query(`ALTER TABLE workout_sets ADD COLUMN IF NOT EXISTS duration_s INT`);
@@ -127,7 +127,7 @@ function cleanExercises(list) {
 }
 
 // Сохранить беговые повторы и упражнения записи (старые удаляем, новые вставляем)
-// «7:05», «19:30» → «07:05»; всё прочее — null
+// «7:05», «19:30» → «07:05»; всё прочее - null
 function cleanTime(v) {
   const m = /^(\d{1,2})[:.](\d{2})$/.exec(String(v ?? '').trim());
   if (!m) return null;
@@ -150,7 +150,7 @@ async function savePlace(client, id, p) {
     [p.place, p.lat, p.lon, p.alt, p.camp, id]);
 }
 
-// Всё, от чего зависит отзыв Fom: если это поменялось при редактировании — отзыв пишем заново
+// Всё, от чего зависит отзыв Fom: если это поменялось при редактировании - отзыв пишем заново
 function contentKey(w) {
   if (!w) return '';
   const comp = typeof w.competition === 'string' ? w.competition : JSON.stringify(w.competition || null);
@@ -213,7 +213,7 @@ function startFeedback(userId, workoutId, today) {
   return p;
 }
 
-// Кому видна запись: 'private' — только мне, 'public' — всем друзьям, 'custom' — выбранным друзьям
+// Кому видна запись: 'private' - только мне, 'public' - всем друзьям, 'custom' - выбранным друзьям
 function cleanVisibility(v) {
   return v === 'public' || v === 'custom' ? v : 'private';
 }
@@ -250,7 +250,7 @@ async function saveChildren(client, workoutId, sets, exercises) {
   if (Array.isArray(sets)) {
     for (let i = 0; i < sets.length; i++) {
       const s = sets[i];
-      // в поле «метры» можно написать время («1'», «30"») — тогда это отрезок по времени
+      // в поле «метры» можно написать время («1'», «30"») - тогда это отрезок по времени
       const dur = parseDuration(s.duration_s) || (looksLikeDuration(s.distance_m) ? parseDuration(s.distance_m) : null);
       const dist = dur ? null : parseDistance(s.distance_m);
       await client.query(
@@ -272,7 +272,7 @@ async function saveChildren(client, workoutId, sets, exercises) {
   }
 }
 
-// Старт: { name, discipline, result, place } — или null, если это обычная тренировка
+// Старт: { name, discipline, result, place } - или null, если это обычная тренировка
 function cleanCompetition(c) {
   if (!c || typeof c !== 'object') return null;
   const out = {
@@ -290,9 +290,9 @@ function num(v, min, max) {
   return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : null;
 }
 
-// POST /api/workouts/parse { text } — умный ввод: Fom раскладывает текст по полям формы
+// POST /api/workouts/parse { text } - умный ввод: Fom раскладывает текст по полям формы
 router.post('/parse', requireTelegramAuth, async (req, res) => {
-  // файл с часов даёт длинный список кругов — ему можно чуть больше текста
+  // файл с часов даёт длинный список кругов - ему можно чуть больше текста
   const text = (req.body.text || '').toString().trim().slice(0, req.body.source === 'watch' ? 5000 : 2000);
   if (!text) return res.status(400).json({ error: 'Напиши, как прошла тренировка' });
 
@@ -336,9 +336,9 @@ router.post('/parse', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// POST /api/workouts — создать/обновить запись за дату (тренировка или отдых).
-// session: 1 — основная запись дня, 2 — вторая тренировка.
-// Новую запись можно создать только за сегодня или вчера; существующую — обновить за любой день.
+// POST /api/workouts - создать/обновить запись за дату (тренировка или отдых).
+// session: 1 - основная запись дня, 2 - вторая тренировка.
+// Новую запись можно создать только за сегодня или вчера; существующую - обновить за любой день.
 router.post('/', requireTelegramAuth, async (req, res) => {
   await schemaReady;
   await socialReady;
@@ -357,13 +357,13 @@ router.post('/', requireTelegramAuth, async (req, res) => {
 
   const session = parseInt(req.body.session, 10) === 2 ? 2 : 1;
   const competition = isTraining ? cleanCompetition(req.body.competition) : null;
-  const competitionJson = competition ? JSON.stringify(competition) : null; // в базу — строкой JSON
+  const competitionJson = competition ? JSON.stringify(competition) : null; // в базу - строкой JSON
 
   if (!isValidDate(date) || !['training', 'rest'].includes(type)) {
     return res.status(400).json({ error: 'date (ГГГГ-ММ-ДД) и type (training|rest) обязательны' });
   }
   if (session === 2 && !isTraining) {
-    return res.status(400).json({ error: 'Вторая запись за день — только тренировка' });
+    return res.status(400).json({ error: 'Вторая запись за день - только тренировка' });
   }
 
   const today = getClientToday(req);
@@ -383,7 +383,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
 
     let workout;
     if (found.rows.length) {
-      // запись уже есть — обновляем
+      // запись уже есть - обновляем
       const upd = await client.query(
         `UPDATE workouts SET type=$1, warmup=$2, cooldown=$3, feeling=$4, rpe=$5, notes=$6, visibility=$7,
            hr_avg=$8, hr_max=$9, hr_min=$10, competition=$11
@@ -392,7 +392,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       );
       workout = upd.rows[0];
     } else {
-      // новая запись — только за сегодня или вчера
+      // новая запись - только за сегодня или вчера
       const maxBack = backfillDaysFor(user);
       if (daysBetween(date, today) > maxBack) {
         await client.query('ROLLBACK');
@@ -417,7 +417,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
       workout = ins.rows[0];
     }
 
-    // у только что созданной записи (особенно у дня отдыха) чистить нечего — лишние обращения к базе пропускаем
+    // у только что созданной записи (особенно у дня отдыха) чистить нечего - лишние обращения к базе пропускаем
     const isNew = !found.rows.length;
     if (!(isNew && !sets.length && !exercises.length)) await saveChildren(client, workout.id, sets, exercises);
     const visibleTo = (isNew && workout.visibility !== 'custom') ? [] : await saveVisibleTo(client, workout.id, user.id, workout.visibility, req.body.visible_to);
@@ -425,7 +425,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     const endTime = isTraining ? cleanTime(req.body.end_time) : null;
     const totalKm = isTraining ? cleanTotalKm(req.body.total_km) : null;
     const place = cleanPlace(req.body, isTraining);
-    // время, объём и место — одним запросом
+    // время, объём и место - одним запросом
     await client.query(
       `UPDATE workouts SET start_time = $1, end_time = $2, total_km = $3, place = $4, place_lat = $5, place_lon = $6, altitude_m = $7, camp = $8 WHERE id = $9`,
       [startTime, endTime, totalKm, place.place, place.lat, place.lon, place.alt, place.camp, workout.id]);
@@ -436,10 +436,10 @@ router.post('/', requireTelegramAuth, async (req, res) => {
     await client.query('COMMIT');
     if (workout.visibility === 'custom') workout.visible_to = visibleTo;
 
-    // Серию пересчитываем целиком — запись задним числом может «склеить» разорванную серию
+    // Серию пересчитываем целиком - запись задним числом может «склеить» разорванную серию
     const streak = await recalcStreak(user.id, today);
 
-    // ИИ-фидбек от Fom — только для тренировок; пишется в фоне, чтобы сохранение не ждало ИИ
+    // ИИ-фидбек от Fom - только для тренировок; пишется в фоне, чтобы сохранение не ждало ИИ
     if (isTraining) startFeedback(user.id, workout.id, today);
 
     res.json({ workout: { ...workout, sets, exercises, ai_feedback: null }, streak, feedback_pending: isTraining });
@@ -452,7 +452,7 @@ router.post('/', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// GET /api/workouts — список тренировок текущего пользователя
+// GET /api/workouts - список тренировок текущего пользователя
 router.get('/', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -463,7 +463,7 @@ router.get('/', requireTelegramAuth, async (req, res) => {
   res.json({ workouts: await attachVisibleTo(result.rows), streak: { current: user.current_streak, longest: user.longest_streak } });
 });
 
-// GET /api/workouts/:id — одна запись с повторами и упражнениями
+// GET /api/workouts/:id - одна запись с повторами и упражнениями
 router.get('/:id', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -474,7 +474,7 @@ router.get('/:id', requireTelegramAuth, async (req, res) => {
   res.json({ workout: (await attachVisibleTo(result.rows))[0] });
 });
 
-// PUT /api/workouts/:id — обновить существующую запись
+// PUT /api/workouts/:id - обновить существующую запись
 router.put('/:id', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -489,7 +489,7 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
   const hrMax = isTraining ? hr(req.body.hr_max) : null;
   const hrMin = isTraining ? hr(req.body.hr_min) : null;
   const competition = isTraining ? cleanCompetition(req.body.competition) : null;
-  const competitionJson = competition ? JSON.stringify(competition) : null; // в базу — строкой JSON
+  const competitionJson = competition ? JSON.stringify(competition) : null; // в базу - строкой JSON
 
   await schemaReady;
   await socialReady;
@@ -505,7 +505,7 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
       [type, warmup || null, cooldown || null, feeling || null, rpe || null, notes || null, before.rows[0]?.source === 'strava' ? 'private' : cleanVisibility(visibility), hrAvg, hrMax, hrMin, competitionJson, req.params.id, user.id]
     );
 
-    // человек дополнил и сохранил запись из Strava — теперь она его, Strava её больше не перезаписывает
+    // человек дополнил и сохранил запись из Strava - теперь она его, Strava её больше не перезаписывает
     if (before.rows[0]?.source === 'strava') {
       await client.query(`UPDATE workouts SET source = 'manual+strava' WHERE id = $1 AND user_id = $2`, [req.params.id, user.id]);
     }
@@ -524,10 +524,10 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Запись изменили (добавили отрезки, поправили пульс…) — Fom пишет отзыв заново
+    // Запись изменили (добавили отрезки, поправили пульс…) - Fom пишет отзыв заново
     const after = await loadWorkout(updated.rows[0].id);
     let aiFeedback = after?.ai_feedback ?? null;
-    // 'updated' — Fom написал новый отзыв; 'same' — содержание не менялось; 'failed' — Fom не ответил
+    // 'updated' - Fom написал новый отзыв; 'same' - содержание не менялось; 'failed' - Fom не ответил
     let feedbackStatus = 'same';
     if (isTraining && after?.source !== 'strava' && (contentKey(before.rows[0]) !== contentKey(after) || !aiFeedback)) {
       startFeedback(user.id, updated.rows[0].id, getClientToday(req));
@@ -543,7 +543,7 @@ router.put('/:id', requireTelegramAuth, async (req, res) => {
   }
 });
 
-// GET /api/workouts/:id/feedback-wait — дождаться отзыва Fom, который пишется в фоне после сохранения
+// GET /api/workouts/:id/feedback-wait - дождаться отзыва Fom, который пишется в фоне после сохранения
 router.get('/:id/feedback-wait', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -557,21 +557,21 @@ router.get('/:id/feedback-wait', requireTelegramAuth, async (req, res) => {
   res.json({ ai_feedback: text || own.rows[0].ai_feedback || null });
 });
 
-// POST /api/workouts/:id/feedback — попросить Fom написать отзыв заново (кнопка «Обновить отзыв»)
+// POST /api/workouts/:id/feedback - попросить Fom написать отзыв заново (кнопка «Обновить отзыв»)
 router.post('/:id/feedback', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   await schemaReady;
   const w = await query('SELECT id, type, source FROM workouts WHERE id = $1 AND user_id = $2', [parseInt(req.params.id, 10) || 0, user.id]);
   if (!w.rows[0]) return res.status(404).json({ error: 'Запись не найдена' });
-  if (w.rows[0].source === 'strava') return res.status(400).json({ error: 'Это запись, которую Forma забрала из Strava. Дополни её и сохрани — тогда она станет твоей, и Fom напишет отзыв 🙂' });
+  if (w.rows[0].source === 'strava') return res.status(400).json({ error: 'Это запись, которую Forma забрала из Strava. Дополни её и сохрани - тогда она станет твоей, и Fom напишет отзыв 🙂' });
   if (w.rows[0].type !== 'training') return res.status(400).json({ error: 'Отзыв бывает только к тренировке' });
   const text = await buildFeedback(user.id, w.rows[0].id, getClientToday(req));
-  if (!text) return res.status(502).json({ error: 'Fom сейчас не ответил — попробуй через минуту' });
+  if (!text) return res.status(502).json({ error: 'Fom сейчас не ответил - попробуй через минуту' });
   res.json({ ai_feedback: text });
 });
 
-// POST /api/workouts/:id/volume — Fom считает беговой объём записи и сверяет с тем, что вписал человек
+// POST /api/workouts/:id/volume - Fom считает беговой объём записи и сверяет с тем, что вписал человек
 router.post('/:id/volume', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -598,7 +598,7 @@ router.post('/:id/volume', requireTelegramAuth, async (req, res) => {
   res.json({ status, fom_km: fom, program_km: est.program_km, user_km: userKm, parts: est.parts, note: est.note });
 });
 
-// POST /api/workouts/:id/total-km { km } — записать общий объём (km: null — убрать, объём снова считается по записи)
+// POST /api/workouts/:id/total-km { km } - записать общий объём (km: null - убрать, объём снова считается по записи)
 router.post('/:id/total-km', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -610,7 +610,7 @@ router.post('/:id/total-km', requireTelegramAuth, async (req, res) => {
   res.json({ ok: true, total_km: km });
 });
 
-// DELETE /api/workouts/:id — после удаления серия пересчитывается
+// DELETE /api/workouts/:id - после удаления серия пересчитывается
 router.delete('/:id', requireTelegramAuth, async (req, res) => {
   const user = await getInternalUser(req.telegramUser.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
