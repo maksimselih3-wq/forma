@@ -77,18 +77,16 @@ export async function recalcStreak(userId, today = serverToday()) {
 
 /**
  * Сколько дней назад можно создать НОВУЮ запись.
- * Новичок в первые 7 дней после регистрации заполняет дневник за прошлую неделю (7 дней назад),
- * потом - только сегодня и вчера (1 день назад). Уже сделанные записи можно править за любой день.
- * Числа меняются в Railway: BACKFILL_NEW_USER_DAYS (по умолчанию 7) и BACKFILL_DAYS (по умолчанию 1).
+ * По умолчанию - за любой прошедший день: дневник можно заполнить, когда удобно, в том числе после пропуска.
+ * На розыгрыши это не влияет: «честная серия» считает только записи, сделанные вовремя (см. giveaway.js).
+ * Если нужно ограничить: BACKFILL_DAYS в Railway (число дней назад), а для новичков - BACKFILL_NEW_USER_DAYS.
  */
 export function backfillDaysFor(user) {
-  // Эти аккаунты (по нику в Telegram) могут заполнять календарь за любой день: переменная UNLIMITED_BACKFILL_USERS
-  // в Railway - ники через запятую, без @. По умолчанию - владелец приложения.
   const vip = (process.env.UNLIMITED_BACKFILL_USERS || 'maksimshelikh').split(',').map((x) => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean);
   if (user?.username && vip.includes(String(user.username).toLowerCase())) return 3650;
-  const newDays = Number(process.env.BACKFILL_NEW_USER_DAYS) || 7;
-  const days = Number(process.env.BACKFILL_DAYS) || 1;
+  const days = Number(process.env.BACKFILL_DAYS) || 3650;
+  const newDays = Number(process.env.BACKFILL_NEW_USER_DAYS) || days;
   const created = user?.created_at ? new Date(user.created_at).getTime() : NaN;
   const ageDays = Number.isFinite(created) ? (Date.now() - created) / 86400000 : Infinity;
-  return ageDays < newDays ? newDays : days;
+  return ageDays < newDays ? Math.max(newDays, days) : days;
 }
