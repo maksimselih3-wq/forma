@@ -5,7 +5,7 @@ import { requireTelegramAuth } from '../telegramAuth.js';
 import { GIVEAWAYS, giveawayStatus, runDraw, startGiveawayScheduler, isAdmin, honestStreak, nextDrawAt } from '../giveaway.js';
 import { sendPush, plainPush } from '../push.js';
 import { startReminderScheduler, reminderText, sendWeeklyDigests } from '../reminders.js';
-import { startTestersScheduler, testerDayInfo, testerMail } from '../testers.js';
+import { startTestersScheduler, testerDayInfo, testerMail, sendTesters } from '../testers.js';
 import { rememberReferral } from '../social.js';
 import { loginPending, confirmLogin, denyLogin } from '../webAuth.js';
 import { adminDeleteRun } from './partners.js';
@@ -477,6 +477,17 @@ async function handleMessage(msg) {
     if (!info) { await tg('sendMessage', { chat_id: chatId, text: `Писем сегодня нет. Адресов в списке: ${n}. Проверь TESTERS_EMAILS и TESTERS_START (день 1 - первый день теста, формат ГГГГ-ММ-ДД).` }); return; }
     const m = testerMail(info);
     await tg('sendMessage', { chat_id: chatId, text: `Адресов: ${n}. Письмо уйдёт каждый день.\n\nТема: ${m.subject}\n\n${m.text}`, disable_web_page_preview: true });
+    return;
+  }
+  if (text === '/testers_send') {
+    if (!(await isAdmin(msg.from.id))) return;
+    await tg('sendMessage', { chat_id: chatId, text: 'Отправляю письма тестировщикам, это займёт около минуты…' });
+    sendTesters({ force: true }).then(async (r) => {
+      const lines = [`Отправлено: ${r.sent}`, `Уже получили сегодня: ${r.skipped}`, `Ошибок: ${r.failed.length}`];
+      if (r.note) lines.push(r.note);
+      r.failed.slice(0, 10).forEach((x) => lines.push(`- ${x.to}: ${x.error}`));
+      await tg('sendMessage', { chat_id: chatId, text: lines.join('\n') });
+    }).catch((e) => tg('sendMessage', { chat_id: chatId, text: `Не вышло: ${e.message}` }));
     return;
   }
   if (text === '/ios_test') {
