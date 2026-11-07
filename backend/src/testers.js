@@ -45,30 +45,45 @@ async function sendMail(to, subject, text) {
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ from: process.env.MAIL_FROM || 'Forma <no-reply@forma2ko5.online>', to: [to], subject, text, reply_to: process.env.TESTERS_REPLY_TO || undefined }),
   });
-  if (!r.ok) throw new Error(`Resend ${r.status}`);
+  if (r.status === 429) { const e = new Error('Resend 429: слишком часто'); e.retry = true; throw e; }
+  if (!r.ok) {
+    let body = '';
+    try { body = (await r.text()).slice(0, 200); } catch (e) { /* ничего */ }
+    throw new Error(`Resend ${r.status} ${body}`.trim());
+  }
 }
 
 let ready;
-async function sendTesters() {
+// force - для проверки админом: не ждёт часа отправки. Возвращает разбор по адресам
+export async function sendTesters({ force = false } = {}) {
+  const report = { sent: 0, skipped: 0, failed: [], note: '' };
   const list = emails();
   const hour = Number(process.env.TESTERS_HOUR_UTC ?? 13);
-  if (!list.length || new Date().getUTCHours() < hour) return;
+  if (!list.length) { report.note = 'TESTERS_EMAILS пуст'; return report; }
+  if (!force && new Date().getUTCHours() < hour) { report.note = 'ещё не время'; return report; }
   const info = testerDayInfo();
-  if (!info) return;
+  if (!info) { report.note = 'сегодня вне 14 дней теста: проверь TESTERS_START'; return report; }
   ready ||= query('CREATE TABLE IF NOT EXISTS tester_mail_log (day DATE NOT NULL, email TEXT NOT NULL, PRIMARY KEY (day, email))');
   await ready;
   const day = todayUtc();
   const { subject, text } = testerMail(info);
-  let sent = 0;
   for (const to of list) {
     // «занимаем» адрес на сегодня, чтобы при двух запусках не написать дважды
     const c = await query('INSERT INTO tester_mail_log (day, email) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING email', [day, to]);
-    if (!c.rows.length) continue;
-    try { await sendMail(to, subject, text); sent++; }
-    catch (e) { console.error('Tester mail failed:', e.message); await query('DELETE FROM tester_mail_log WHERE day=$1 AND email=$2', [day, to]).catch(() => 0); }
-    await new Promise((ok) => setTimeout(ok, 400));
+    if (!c.rows.length) { report.skipped++; continue; }
+    try {
+      try { await sendMail(to, subject, text); }
+      catch (e) { if (!e.retry) throw e; await new Promise((ok) => setTimeout(ok, 1500)); await sendMail(to, subject, text); } // Resend пускает ~2 письма в секунду
+      report.sent++;
+    } catch (e) {
+      console.error('Tester mail failed:', to, e.message);
+      report.failed.push({ to, error: e.message });
+      await query('DELETE FROM tester_mail_log WHERE day=$1 AND email=$2', [day, to]).catch(() => 0);
+    }
+    await new Promise((ok) => setTimeout(ok, 700));
   }
-  if (sent) console.log(`Testers: отправлено ${sent}`);
+  if (report.sent) console.log(`Testers: отправлено ${report.sent}`);
+  return report;
 }
 
 export function startTestersScheduler() {
