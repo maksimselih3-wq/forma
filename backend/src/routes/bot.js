@@ -490,6 +490,18 @@ async function handleMessage(msg) {
     }).catch((e) => tg('sendMessage', { chat_id: chatId, text: `Не вышло: ${e.message}` }));
     return;
   }
+  if (text === '/dbping') {
+    if (!(await isAdmin(msg.from.id))) return;
+    const times = [];
+    for (let i = 0; i < 6; i++) { const t = Date.now(); try { await query('SELECT 1'); } catch (e) { times.push(-1); continue; } times.push(Date.now() - t); }
+    let host = '?';
+    try { host = new URL(process.env.DATABASE_URL).hostname.replace(/^[^.]*\.(pooler|db)\./, '$1.'); } catch (e) { /* ничего */ }
+    const ok = times.filter((x) => x >= 0);
+    const min = ok.length ? Math.min(...ok) : -1;
+    const verdict = min < 0 ? 'База не отвечает.' : min > 150 ? 'База далеко от сервера (больше 150 мс на запрос): это главная причина медленной работы.' : min > 40 ? 'Задержка до базы заметная, но терпимая.' : 'База рядом, дело не в расстоянии.';
+    await tg('sendMessage', { chat_id: chatId, text: `Запросы к базе, мс: ${times.join(', ')}\nЛучшее время: ${min} мс\nРегион сервера (Railway): ${process.env.RAILWAY_REPLICA_REGION || 'неизвестно'}\nАдрес базы: ${host}\n\n${verdict}` });
+    return;
+  }
   if (text === '/ios_test') {
     if (!(await isAdmin(msg.from.id))) return;
     await tg('sendMessage', { chat_id: chatId, text: IOS_HOME_TEXT, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: HOME_MENU });
