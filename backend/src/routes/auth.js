@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { query, dbReady, pool } from '../db.js';
 import { requireTelegramAuth } from '../telegramAuth.js';
 import { revokeAllSessions } from '../webAuth.js';
+import { disciplineGroupOf } from '../ai.js';
 import { recalcStreak, getClientToday, backfillDaysFor } from '../streak.js';
 import { remindersReady, setReminderEnabled, setNotifyPrefs } from '../reminders.js';
 import { rememberReferral, settleReferral, socialReady, pioneerNo } from '../social.js';
@@ -143,12 +144,22 @@ router.post('/sport', requireTelegramAuth, async (req, res) => {
   if (sport !== null && !SPORTS.includes(sport)) return res.status(400).json({ error: 'Такого вида спорта нет' });
   const discipline = sport ? (req.body.discipline || '').toString().trim().slice(0, 40) || null : null;
 
-  const result = await query(
-    'UPDATE users SET sport = $1, discipline = $2 WHERE telegram_id = $3 RETURNING sport, discipline',
-    [sport, discipline, req.telegramUser.id]
-  );
+  // если специализация поменялась (например, спринтер стал стайером) - запоминаем прежнюю и дату, Fom учтёт переход
+  const before = await query('SELECT discipline FROM users WHERE telegram_id = $1', [req.telegramUser.id]);
+  const oldD = before.rows[0]?.discipline || null;
+  const changed = !!(oldD && discipline && oldD.trim().toLowerCase() !== discipline.trim().toLowerCase()
+    && disciplineGroupOf(oldD) !== disciplineGroupOf(discipline));
+
+  const result = changed
+    ? await query(
+      `UPDATE users SET sport = $1, discipline = $2, discipline_prev = $4, discipline_changed_at = now()
+       WHERE telegram_id = $3 RETURNING sport, discipline`,
+      [sport, discipline, req.telegramUser.id, oldD])
+    : await query(
+      'UPDATE users SET sport = $1, discipline = $2 WHERE telegram_id = $3 RETURNING sport, discipline',
+      [sport, discipline, req.telegramUser.id]);
   if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-  res.json({ ok: true, ...result.rows[0] });
+  res.json({ ok: true, changed, ...result.rows[0] });
 });
 
 // ===================================================================
