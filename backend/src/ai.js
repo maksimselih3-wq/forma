@@ -262,7 +262,7 @@ function yearsRu(n) {
  */
 export async function athleteContext(userId, { forCoach = false } = {}) {
   try {
-    const u = await query('SELECT sport, discipline FROM users WHERE id = $1', [userId]);
+    const u = await query('SELECT sport, discipline, discipline_prev, discipline_changed_at FROM users WHERE id = $1', [userId]);
     let p = {};
     try {
       const r = await query('SELECT * FROM athlete_profiles WHERE user_id = $1', [userId]);
@@ -283,6 +283,15 @@ export async function athleteContext(userId, { forCoach = false } = {}) {
     const lines = [];
     if (parts.length) lines.push(parts.join(', '));
     if (expertise) lines.push(expertise);
+    // недавно сменил специализацию: прошлые тренировки - про прежнюю, а оценивать надо с учётом перехода
+    const prev = u.rows[0]?.discipline_prev;
+    const changedAt = u.rows[0]?.discipline_changed_at ? new Date(u.rows[0].discipline_changed_at) : null;
+    if (prev && changedAt && discipline && Date.now() - changedAt.getTime() < 180 * 86400000) {
+      const when = changedAt.toISOString().slice(0, 10);
+      const g = disciplineGroupOf(prev);
+      const note = { sprint: 'спринта (скорость, короткие отрезки, мало километров)', hurdles: 'барьерного бега', middle: 'средних дистанций', long: 'длинных дистанций (большой объём)', jumps: 'прыжков', throws: 'метаний', walk: 'ходьбы', combined: 'многоборья' }[g] || prev;
+      lines.push(`Недавно сменил специализацию: раньше - ${prev}, с ${when} - ${discipline}. Тренировки до ${when} отражают прежнюю специализацию (${note}); не считай их ошибкой и не сравнивай напрямую с нынешней. Оценивай по текущей дисциплине и следи за переходом: нагрузку и объём наращивай постепенно (не больше ~10% в неделю), учти, что организм и техника ещё перестраиваются, и мягко подсказывай, как лучше пройти этот период.`);
+    }
     if (p.records) lines.push(`Личные рекорды: ${p.records}`);
     if (p.goal) lines.push(`Цель: ${p.goal}`);
     if (p.injuries && !forCoach) lines.push(`Травмы и ограничения: ${p.injuries}`);
@@ -349,11 +358,11 @@ export function disciplineGroupOf(discipline) {
   if (/многобор|десятибор|семибор|пятибор/.test(s)) return 'combined';
   if (/барьер|с\/б/.test(s)) return 'hurdles';
   if (/ходьб/.test(s)) return 'walk';
-  if (/длинн|марафон|5000|10 ?000|стипл|кросс|3000/.test(s)) return 'long';
-  if (/средн|800|1500|миля/.test(s)) return 'middle';
+  if (/длинн|марафон|5000|10 ?000|стипл|кросс|3000|стайер|стаер/.test(s)) return 'long';
+  if (/средн|800|1500|миля|миддл/.test(s)) return 'middle';
   if (/спринт|^60|100 ?м|200 ?м|400 ?м|эстафет/.test(s)) return 'sprint';
-  if (/метан|ядр|диск|копь|молот/.test(s)) return 'throws';
-  if (/прыж|длина|тройн|высот|шест/.test(s)) return 'jumps';
+  if (/метан|метател|ядр|диск|копь|молот/.test(s)) return 'throws';
+  if (/прыж|прыгун|длина|тройн|высот|шест/.test(s)) return 'jumps';
   return null;
 }
 function disciplineExpertise(discipline) {
