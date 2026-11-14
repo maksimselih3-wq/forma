@@ -352,6 +352,27 @@ async function sendIosBroadcast(adminChat) {
   await tg('sendMessage', { chat_id: adminChat, text: `Рассылка готова: доставлено ${sent}, не доставлено ${failed} (бот не запущен у человека или заблокирован).` });
 }
 
+// Сообщение «всё снова работает» после сбоя: по одному разу на дату, push если есть, иначе сообщение в Telegram
+const UP_TEXT = '✅ <b>Forma снова работает</b>\n\nБыл сбой связи с сервером, сейчас всё починили. Если приложение не открывается или не грузит данные - закрой его полностью и открой снова.\n\nСпасибо за терпение 🙏';
+async function sendUpBroadcast(adminChat) {
+  const key = 'up-' + new Date().toISOString().slice(0, 10);
+  await query(`CREATE TABLE IF NOT EXISTS broadcast_log (
+    key TEXT NOT NULL, telegram_id BIGINT NOT NULL, ok BOOLEAN NOT NULL DEFAULT true, at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (key, telegram_id))`);
+  const r = await query(
+    `SELECT telegram_id FROM users WHERE telegram_id < 7000000000000000
+       AND telegram_id NOT IN (SELECT telegram_id FROM broadcast_log WHERE key = $1 AND ok)`, [key]);
+  let sent = 0, failed = 0;
+  for (const row of r.rows) {
+    const res = await sendHtml(row.telegram_id, UP_TEXT, 'status');
+    const ok = !!res?.ok;
+    ok ? sent++ : failed++;
+    await query('INSERT INTO broadcast_log (key, telegram_id, ok) VALUES ($1, $2, $3) ON CONFLICT (key, telegram_id) DO UPDATE SET ok = EXCLUDED.ok, at = now()', [key, row.telegram_id, ok]).catch(() => 0);
+    await sleep(70);
+  }
+  await tg('sendMessage', { chat_id: adminChat, text: `Готово: доставлено ${sent}, не доставлено ${failed} (бот не запущен у человека или заблокирован). Повторная команда допишет только тем, кому не дошло.` });
+}
+
 async function handleMessage(msg) {
   const chatId = msg.chat?.id;
   if (!chatId || msg.chat.type !== 'private') return;
@@ -500,6 +521,17 @@ async function handleMessage(msg) {
     const min = ok.length ? Math.min(...ok) : -1;
     const verdict = min < 0 ? 'База не отвечает.' : min > 150 ? 'База далеко от сервера (больше 150 мс на запрос): это главная причина медленной работы.' : min > 40 ? 'Задержка до базы заметная, но терпимая.' : 'База рядом, дело не в расстоянии.';
     await tg('sendMessage', { chat_id: chatId, text: `Запросы к базе, мс: ${times.join(', ')}\nЛучшее время: ${min} мс\nРегион сервера (Railway): ${process.env.RAILWAY_REPLICA_REGION || 'неизвестно'}\nАдрес базы: ${host}\n\n${verdict}` });
+    return;
+  }
+  if (text === '/up_test') {
+    if (!(await isAdmin(msg.from.id))) return;
+    await tg('sendMessage', { chat_id: chatId, text: UP_TEXT, parse_mode: 'HTML', reply_markup: OPEN_BUTTON });
+    return;
+  }
+  if (text === '/up_send') {
+    if (!(await isAdmin(msg.from.id))) return;
+    await tg('sendMessage', { chat_id: chatId, text: 'Отправляю всем сообщение «Forma снова работает». Напишу, когда закончу.' });
+    sendUpBroadcast(chatId).catch((e) => tg('sendMessage', { chat_id: chatId, text: `Рассылка остановилась: ${e.message}` }));
     return;
   }
   if (text === '/ios_test') {
